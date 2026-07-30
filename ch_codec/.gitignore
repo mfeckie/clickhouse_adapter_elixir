@@ -26,7 +26,6 @@ ch_codec-*.tar
 # Rust binary artifacts
 /target/
 /native/*/target/
-Cargo.lock
 
 # Compiled NIF loaded from priv/native by RustlerPrecompiled/rustler
 /priv/native/
