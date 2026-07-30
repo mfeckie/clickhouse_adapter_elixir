@@ -96,6 +96,33 @@ defmodule Ecto.Adapters.ClickHouse do
     end
   end
 
+  ## `update/6` and `delete/5` are overridden (rather than left to the
+  ## default implementation `use Ecto.Adapters.SQL` generates) purely to
+  ## dodge a spurious compiler warning: the generated default does
+  ## `sql = @conn.update(...)` / `sql = @conn.delete(...)`, and since
+  ## `Connection.update/5`/`delete/4` always raise (ClickHouse has no
+  ## synchronous UPDATE/DELETE -- see their docs), Elixir's type checker
+  ## infers their return type as `none()` and flags that pattern as "will
+  ## never match". Raising directly here, without going through a call
+  ## whose inferred return type is uninhabited, sidesteps that false
+  ## positive. The user-facing behavior (a clear ArgumentError explaining
+  ## why) is unchanged either way.
+  @impl Ecto.Adapter.Schema
+  def update(_adapter_meta, _schema_meta, _params, _filters, _returning, _opts) do
+    raise ArgumentError,
+          "the ClickHouse adapter does not support UPDATE: ClickHouse mutates existing data " <>
+            "via the asynchronous `ALTER TABLE ... UPDATE` statement, not a synchronous SQL " <>
+            "UPDATE -- issue an ALTER TABLE mutation directly via a raw query if you need this"
+  end
+
+  @impl Ecto.Adapter.Schema
+  def delete(_adapter_meta, _schema_meta, _filters, _returning, _opts) do
+    raise ArgumentError,
+          "the ClickHouse adapter does not support DELETE: ClickHouse mutates existing data " <>
+            "via the asynchronous `ALTER TABLE ... DELETE` statement, not a synchronous SQL " <>
+            "DELETE -- issue an ALTER TABLE mutation directly via a raw query if you need this"
+  end
+
   ## Storage -- see moduledoc. `opts` here is the repo's full config
   ## (`:hostname`, `:port`, `:database`, `:username`, `:password`, etc, as
   ## passed to `Repo.start_link/1`/read from `config.exs`) -- exactly what

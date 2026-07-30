@@ -307,6 +307,13 @@ defmodule Ecto.Adapters.ClickHouse.Connection do
   defp insert_all_value(nil), do: "NULL"
   defp insert_all_value(_), do: "?"
 
+  # update/5 and delete/4 are only reachable via a direct call to this
+  # module (e.g. from a raw script) -- Ecto.Adapter.Schema's `update/6` and
+  # `delete/5` in Ecto.Adapters.ClickHouse are overridden to raise directly
+  # instead of going through these, so Ecto.Repo.update!/delete! never hits
+  # them. See the comment there for why: it dodges a spurious "will never
+  # match" type-checker warning caused by these always-raising functions
+  # inferring a `none()` return type.
   @impl true
   def update(_prefix, _table, _fields, _filters, _returning) do
     raise ArgumentError,
