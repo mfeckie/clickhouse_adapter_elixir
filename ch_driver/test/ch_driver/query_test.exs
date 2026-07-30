@@ -105,18 +105,19 @@ defmodule ChDriver.QueryTest do
     end
 
     # An unsupported inner type still surfaces cleanly through the Nullable
-    # wrapper rather than hanging/crashing. UUID (previously used here) is
-    # now decoded (clickhouse_adapter_elixir-8a2.19); IPv6 remains a
-    # deliberately deferred type (see
-    # `ChDriver.Protocol.NativeBlock`'s moduledoc) so it still exercises
-    # this "unsupported type" error path.
+    # wrapper rather than hanging/crashing. UUID and IPv6 (previously used
+    # here) are now decoded (clickhouse_adapter_elixir-8a2.19 and .21
+    # respectively); UInt128 remains outside this module's pragmatic subset
+    # of the type system (see `ChDriver.Protocol.NativeBlock`'s moduledoc --
+    # only up to UInt64/Int64 are covered) so it still exercises this
+    # "unsupported type" error path.
     test "a Nullable wrapping an unsupported inner type fails cleanly (no hang/crash)", %{
       conn: conn
     } do
-      assert {:error, {:unsupported_type, "IPv6"}} =
+      assert {:error, {:unsupported_type, "UInt128"}} =
                Connection.query(
                  conn,
-                 "SELECT CAST(NULL AS Nullable(IPv6)) AS x"
+                 "SELECT CAST(NULL AS Nullable(UInt128)) AS x"
                )
     end
 

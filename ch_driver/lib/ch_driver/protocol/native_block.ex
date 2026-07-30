@@ -54,9 +54,21 @@ defmodule ChDriver.Protocol.NativeBlock do
       `Decimal.t()`.
     * `UUID`.
     * `LowCardinality(T)` for any scalar `T` (String, integers, etc).
+    * `FixedString(N)` (clickhouse_adapter_elixir-8a2.21), decoded to a raw
+      `N`-byte Elixir binary, null-padding included verbatim.
+    * `IPv4` (clickhouse_adapter_elixir-8a2.21), decoded to its dotted-quad
+      text form (matching the `UUID`/text-form convention already used by
+      this module -- see `decode_ipv4/1`).
+    * `IPv6` (clickhouse_adapter_elixir-8a2.21), decoded to its standard
+      colon-hex text form via `:inet.ntoa/1` (see `decode_ipv6/1`).
+    * `Map(K, V)` (clickhouse_adapter_elixir-8a2.21) for any scalar `K`/`V`
+      this module already knows how to decode, decoded to an Elixir `map()`
+      per row (see `decode_map/3` for the confirmed-live wire format).
 
-  Deliberately deferred (not implemented -- see clickhouse_adapter_elixir-8a2.19's
-  closing notes for why): `Map(K, V)`, `IPv4`, `IPv6`, `FixedString(N)`.
+  Deliberately still deferred: `Tuple(...)` in its own right (only
+  supported today as `Map(K, V)`'s implicit internal representation, not as
+  a directly-selectable column type -- see `decode_map/3`'s moduledoc for
+  why generalizing it is more work than it looks).
   """
 
   alias ChDriver.Protocol.Varint
@@ -171,25 +183,37 @@ defmodule ChDriver.Protocol.NativeBlock do
             decode_array(inner_type, num_rows, binary)
 
           :error ->
-            case parse_low_cardinality(type) do
-              {:ok, inner_type} ->
-                decode_low_cardinality(inner_type, num_rows, binary)
+            case parse_map(type) do
+              {:ok, key_type, value_type} ->
+                decode_map(key_type, value_type, num_rows, binary)
 
               :error ->
-                case parse_decimal(type) do
-                  {:ok, precision, scale} ->
-                    decode_decimal(precision, scale, num_rows, binary)
+                case parse_low_cardinality(type) do
+                  {:ok, inner_type} ->
+                    decode_low_cardinality(inner_type, num_rows, binary)
 
                   :error ->
-                    case column_codec(type) do
-                      {:fixed, byte_size, unpack} ->
-                        decode_fixed_width(binary, num_rows, byte_size, unpack)
+                    case parse_decimal(type) do
+                      {:ok, precision, scale} ->
+                        decode_decimal(precision, scale, num_rows, binary)
 
-                      :string ->
-                        decode_strings(binary, num_rows, [])
+                      :error ->
+                        case parse_fixed_string(type) do
+                          {:ok, size} ->
+                            decode_fixed_width(binary, num_rows, size, & &1)
 
-                      :unsupported ->
-                        {:error, {:unsupported_type, type}}
+                          :error ->
+                            case column_codec(type) do
+                              {:fixed, byte_size, unpack} ->
+                                decode_fixed_width(binary, num_rows, byte_size, unpack)
+
+                              :string ->
+                                decode_strings(binary, num_rows, [])
+
+                              :unsupported ->
+                                {:error, {:unsupported_type, type}}
+                            end
+                        end
                     end
                 end
             end
@@ -229,6 +253,56 @@ defmodule ChDriver.Protocol.NativeBlock do
   # Parses ClickHouse's `LowCardinality(T)` wrapper syntax, returning the
   # inner type string.
   defp parse_low_cardinality(type), do: strip_wrapper(type, "LowCardinality(")
+
+  # Parses ClickHouse's `Map(K, V)` wrapper syntax, returning `{:ok, key_type,
+  # value_type}`. Splits on the top-level comma only (tracking paren depth so
+  # e.g. `Map(String, Decimal(10, 2))` isn't split on the inner comma).
+  defp parse_map(type) do
+    with {:ok, inner} <- strip_wrapper(type, "Map("),
+         [key_type, value_type] <- split_top_level_comma(inner) do
+      {:ok, String.trim(key_type), String.trim(value_type)}
+    else
+      _ -> :error
+    end
+  end
+
+  defp split_top_level_comma(inner) do
+    inner
+    |> String.to_charlist()
+    |> do_split_top_level_comma(0, [], [])
+  end
+
+  defp do_split_top_level_comma([], 0, current, acc) do
+    Enum.reverse([current |> Enum.reverse() |> List.to_string() | acc])
+  end
+
+  defp do_split_top_level_comma([], _depth, _current, _acc), do: :error
+
+  defp do_split_top_level_comma([?( | rest], depth, current, acc) do
+    do_split_top_level_comma(rest, depth + 1, [?( | current], acc)
+  end
+
+  defp do_split_top_level_comma([?) | rest], depth, current, acc) do
+    do_split_top_level_comma(rest, depth - 1, [?) | current], acc)
+  end
+
+  defp do_split_top_level_comma([?, | rest], 0, current, acc) do
+    do_split_top_level_comma(rest, 0, [], [current |> Enum.reverse() |> List.to_string() | acc])
+  end
+
+  defp do_split_top_level_comma([char | rest], depth, current, acc) do
+    do_split_top_level_comma(rest, depth, [char | current], acc)
+  end
+
+  # Parses ClickHouse's `FixedString(N)` type, returning `{:ok, n}`.
+  defp parse_fixed_string("FixedString(" <> rest) do
+    case Regex.run(~r/^(\d+)\)$/, rest) do
+      [_, n] -> {:ok, String.to_integer(n)}
+      nil -> :error
+    end
+  end
+
+  defp parse_fixed_string(_type), do: :error
 
   # `Nullable(T)`'s wire format (confirmed against ClickHouse's
   # `ColumnNullable.cpp` and cross-referenced with clickhouse-driver
@@ -283,6 +357,76 @@ defmodule ChDriver.Protocol.NativeBlock do
       end)
 
     rows
+  end
+
+  # `Map(K, V)`'s wire format (confirmed live against ClickHouse 24.8, byte-
+  # for-byte, against a real `Map(String, UInt32)` column with both empty
+  # and populated map values): ClickHouse's own documentation and
+  # `DataTypeMap.cpp` state that `Map(K, V)` is implemented internally as
+  # `Array(Tuple(K, V))`, and its wire encoding follows that exactly --
+  # `num_rows`-long cumulative little-endian `UInt64` offsets (identical to
+  # `Array(T)`'s own offsets -- `offsets[i]` is the end index, exclusive, of
+  # row i's entries in the flattened key/value columns below), immediately
+  # followed by the *whole flattened key column* (`total_elements` values of
+  # `K`, decoded via `K`'s own `decode_column_data/3`) and then the *whole
+  # flattened value column* (`total_elements` values of `V`) -- i.e. a
+  # `Tuple(K, V)` column is serialized as one sub-stream per tuple field,
+  # back to back, not as interleaved (key, value) pairs. Confirmed live by
+  # decoding a captured `Map(String, UInt32)` payload by hand: interpreting
+  # the bytes as "all offsets, then all keys, then all values" round-trips
+  # `{'a':1,'b':2}` correctly, while an interleaved-pairs reading does not
+  # (it misaligns the `String` length-prefix bytes against unrelated
+  # `UInt32` value bytes).
+  defp decode_map(key_type, value_type, num_rows, binary) do
+    with {:ok, offsets, rest} <-
+           decode_fixed_width(binary, num_rows, 8, fn <<v::unsigned-little-64>> -> v end),
+         total_elements = List.last(offsets, 0),
+         {:ok, flat_keys, rest} <- decode_column_data(key_type, total_elements, rest),
+         {:ok, flat_values, rest} <- decode_column_data(value_type, total_elements, rest) do
+      entries = Enum.zip(flat_keys, flat_values)
+      rows = split_by_offsets(entries, offsets)
+      {:ok, Enum.map(rows, &Map.new/1), rest}
+    end
+  end
+
+  # `FixedString(N)`'s wire format (confirmed live against ClickHouse 24.8
+  # via `hex(toFixedString('ab', 5))` -> `6162000000`, and cross-referenced
+  # with `DataTypeFixedString.cpp`'s `deserializeBinaryBulk`): exactly `N`
+  # raw bytes per row, right-padded with `0x00` up to `N` if the value is
+  # shorter -- unlike `String`, there is no length-prefix varint at all, and
+  # unlike `String`'s own null-termination-free encoding, the padding bytes
+  # are real wire content. Confirmed live (via `length(f)` on a real
+  # `FixedString(5)` column holding `'ab'`) that ClickHouse does **not**
+  # trim the padding back out on `SELECT` -- the padded value is the
+  # column's actual value -- so this decodes to the raw `N`-byte binary
+  # verbatim, trailing NULs included, via the generic `decode_fixed_width/4`
+  # with an identity unpack function (see `parse_fixed_string/1`'s call
+  # site).
+
+  # `IPv4`'s wire format (confirmed live: `hex(reinterpretAsFixedString(
+  # toIPv4('192.168.1.1')))` -> `0101A8C0`, i.e. the same little-endian
+  # `UInt32` encoding as every other ClickHouse integer type -- `192.168.1.1`
+  # is `0xC0A80101` as a plain big-endian-read integer, and the wire bytes
+  # `01 01 A8 C0` are exactly that value's little-endian byte order):
+  # decoded to the dotted-quad text form (matching this module's existing
+  # `UUID` decode-to-text convention) by re-reading the same 4 bytes as a
+  # big-endian `UInt32` and splitting into octets.
+  defp decode_ipv4(<<v::unsigned-little-32>>) do
+    <<a::8, b::8, c::8, d::8>> = <<v::unsigned-big-32>>
+    "#{a}.#{b}.#{c}.#{d}"
+  end
+
+  # `IPv6`'s wire format (confirmed live: `hex(reinterpretAsFixedString(
+  # toIPv6('2001:db8::1')))` -> `20010DB8000000000000000000000001`, and
+  # `hex(reinterpretAsFixedString(toIPv6('::ffff:192.168.1.1')))` ->
+  # `00000000000000000000FFFFC0A80101`): a plain 16-byte value in standard
+  # network byte order -- i.e. byte-for-byte identical to the address's
+  # normal text-form byte layout, with **no** reversal of any kind (unlike
+  # `UUID`, whose wire form independently byte-reverses each 8-byte half --
+  # see `decode_uuid/1`). Decoded to the standard colon-hex text form via
+  # `:inet.ntoa/1` on the 8 big-endian 16-bit groups.
+  defp decode_ipv6(<<a::16, b::16, c::16, d::16, e::16, f::16, g::16, h::16>>) do
+    {a, b, c, d, e, f, g, h} |> :inet.ntoa() |> to_string()
   end
 
   # `Decimal(P, S)`'s wire format (confirmed against ClickHouse's
@@ -446,6 +590,8 @@ defmodule ChDriver.Protocol.NativeBlock do
   defp column_codec("DateTime"), do: {:fixed, 4, &decode_datetime/1}
   defp column_codec("String"), do: :string
   defp column_codec("UUID"), do: {:fixed, 16, &decode_uuid/1}
+  defp column_codec("IPv4"), do: {:fixed, 4, &decode_ipv4/1}
+  defp column_codec("IPv6"), do: {:fixed, 16, &decode_ipv6/1}
 
   defp column_codec(type) do
     cond do

@@ -166,6 +166,24 @@ defmodule Ecto.Adapters.ClickHouse.Connection do
     [?[, Enum.map_intersperse(list, ?,, &encode_literal/1), ?]]
   end
 
+  # ClickHouse's `Map(K, V)` literal syntax (`{key1: value1, key2: value2}`,
+  # confirmed live via `INSERT ... VALUES (1, {'a':1,'b':2})`) -- used for
+  # `Map(K, V)`-typed INSERT parameters (clickhouse_adapter_elixir-8a2.21).
+  # Ecto's built-in `:map` type dumps/loads a plain Elixir map unchanged
+  # (see `Ecto.Type`'s base `:map` handling), and
+  # `ChDriver.Protocol.NativeBlock.decode_map/3` already decodes
+  # `Map(K, V)` columns to plain Elixir maps, so `:map` is the schema-side
+  # type paired with a `Map(K, V)` migration column given as a quoted atom
+  # (e.g. `add(:m, :"Map(String, UInt32)")`) -- same escape-hatch pattern as
+  # `LowCardinality(T)`.
+  defp encode_literal(map) when is_map(map) do
+    [
+      ?{,
+      Enum.map_intersperse(map, ?,, fn {k, v} -> [encode_literal(k), ?:, encode_literal(v)] end),
+      ?}
+    ]
+  end
+
   defp encode_literal(other) do
     raise ArgumentError,
           "the ClickHouse adapter does not yet know how to encode #{inspect(other)} as a SQL literal"
@@ -558,6 +576,17 @@ defmodule Ecto.Adapters.ClickHouse.Connection do
   defp column_type!(:utc_datetime_usec), do: "DateTime64(6)"
   defp column_type!(:date), do: "Date"
   defp column_type!(:decimal), do: "Decimal(38, 9)"
+
+  # `IPv4`/`IPv6` (clickhouse_adapter_elixir-8a2.21) decode to their dotted-
+  # quad/colon-hex text forms (see
+  # `ChDriver.Protocol.NativeBlock.decode_ipv4/1`/`decode_ipv6/1`) and accept
+  # a plain string literal on INSERT (ClickHouse parses `'192.168.1.1'`/
+  # `'2001:db8::1'` into the column's native binary representation itself,
+  # confirmed live) -- so, like `:uuid`, they're plain first-class Ecto
+  # migration types here with a plain `:string` schema field on the other
+  # end.
+  defp column_type!(:ipv4), do: "IPv4"
+  defp column_type!(:ipv6), do: "IPv6"
 
   # `{:array, inner_type}` is Ecto's own built-in shorthand for an array
   # column (`add(:tags, {:array, :string})` in a migration) -- maps

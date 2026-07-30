@@ -23,6 +23,19 @@ defmodule Ecto.Adapters.ClickHouse.ExtendedTypesIntegrationTest do
       `:string` schema field round-trips exactly like a bare `String`
       column would.
 
+  Also covers `:ipv4`/`:ipv6` (clickhouse_adapter_elixir-8a2.21): first-class
+  Ecto migration types mapping to ClickHouse's `IPv4`/`IPv6` column types,
+  paired with a plain `:string` schema field on the other end (see
+  `Ecto.Adapters.ClickHouse.Connection.column_type!/1`). `Map(K, V)` (also
+  added in 8a2.21) is deliberately *not* covered here at the Ecto level --
+  it round-trips fine as a raw ClickHouse type given verbatim as a quoted
+  atom (`add(:m, :"Map(String, UInt32)")`) paired with Ecto's built-in
+  `:map` schema type, exactly like the `LowCardinality(String)` pattern
+  above, but adding it to this shared `widgets` table/schema would
+  complicate the DDL assertion and insert/select test with a type this
+  suite doesn't otherwise need -- `ch_driver/test/ch_driver/map_test.exs`
+  already covers `Map(K, V)` thoroughly at the raw `ChDriver.query` level.
+
   Requires `docker compose up -d` (from `adapter/`) to have been run first.
   """
 
@@ -48,6 +61,8 @@ defmodule Ecto.Adapters.ClickHouse.ExtendedTypesIntegrationTest do
         add(:amount, :decimal, null: false)
         add(:external_id, :uuid, null: false)
         add(:status, :"LowCardinality(String)", null: false)
+        add(:ip_v4, :ipv4, null: false)
+        add(:ip_v6, :ipv6, null: false)
       end
     end
   end
@@ -63,6 +78,8 @@ defmodule Ecto.Adapters.ClickHouse.ExtendedTypesIntegrationTest do
       field(:amount, :decimal)
       field(:external_id, :string)
       field(:status, :string)
+      field(:ip_v4, :string)
+      field(:ip_v6, :string)
     end
   end
 
@@ -117,6 +134,8 @@ defmodule Ecto.Adapters.ClickHouse.ExtendedTypesIntegrationTest do
              ["amount", "Decimal(38, 9)"],
              ["external_id", "UUID"],
              ["id", "UInt64"],
+             ["ip_v4", "IPv4"],
+             ["ip_v6", "IPv6"],
              ["scores", "Array(Int32)"],
              ["status", "LowCardinality(String)"],
              ["tags", "Array(String)"]
@@ -130,7 +149,9 @@ defmodule Ecto.Adapters.ClickHouse.ExtendedTypesIntegrationTest do
       scores: [10, 20, 30],
       amount: Decimal.new("1234.567800000"),
       external_id: "61f0c404-5cb3-11e7-907b-a6006ad3dba0",
-      status: "active"
+      status: "active",
+      ip_v4: "192.168.1.1",
+      ip_v6: "::1"
     })
 
     TestRepo.insert!(%Widget{
@@ -139,7 +160,9 @@ defmodule Ecto.Adapters.ClickHouse.ExtendedTypesIntegrationTest do
       scores: [],
       amount: Decimal.new("0.000000000"),
       external_id: "00000000-0000-0000-0000-000000000000",
-      status: "active"
+      status: "active",
+      ip_v4: "0.0.0.0",
+      ip_v6: "2001:db8::1"
     })
 
     import Ecto.Query
@@ -153,7 +176,9 @@ defmodule Ecto.Adapters.ClickHouse.ExtendedTypesIntegrationTest do
                scores: [10, 20, 30],
                amount: amount1,
                external_id: "61f0c404-5cb3-11e7-907b-a6006ad3dba0",
-               status: "active"
+               status: "active",
+               ip_v4: "192.168.1.1",
+               ip_v6: "::1"
              },
              %Widget{
                id: 2,
@@ -161,7 +186,9 @@ defmodule Ecto.Adapters.ClickHouse.ExtendedTypesIntegrationTest do
                scores: [],
                amount: amount2,
                external_id: "00000000-0000-0000-0000-000000000000",
-               status: "active"
+               status: "active",
+               ip_v4: "0.0.0.0",
+               ip_v6: "2001:db8::1"
              }
            ] = results
 
