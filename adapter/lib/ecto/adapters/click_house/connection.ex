@@ -492,15 +492,15 @@ defmodule Ecto.Adapters.ClickHouse.Connection do
   defp column_definition!({:add, name, type, opts}) do
     base_type = column_type!(type)
 
-    # Default to NOT NULL (opposite of most SQL adapters, where columns are
-    # nullable unless `null: false` is given): `ChDriver`'s row-binary
-    # decoder does not implement `Nullable(T)` yet (see
-    # `ChDriver.Protocol.NativeBlock`) -- reading back a `Nullable` column
-    # currently fails with `{:unsupported_type, "Nullable(...)"}`, confirmed
-    # live. Pass `null: true` explicitly if you need a nullable column *and*
-    # don't plan to `SELECT` it back through this adapter yet.
+    # `null: true` is Ecto's own default (matching every other Ecto
+    # adapter): a column is nullable unless `null: false` is given
+    # explicitly. `ChDriver.Protocol.NativeBlock` now decodes `Nullable(T)`
+    # (clickhouse_adapter_elixir-8a2.17), so this maps straight through to a
+    # `Nullable(...)` column type. A `:primary_key` column is never
+    # wrapped in `Nullable`, regardless of the `:null` option, since
+    # ClickHouse's `ORDER BY`/primary key columns can't be `Nullable`.
     nullable? =
-      Keyword.get(opts, :null, false) == true and not Keyword.get(opts, :primary_key, false)
+      Keyword.get(opts, :null, true) == true and not Keyword.get(opts, :primary_key, false)
 
     type_sql = if nullable?, do: ["Nullable(", base_type, ?)], else: base_type
 

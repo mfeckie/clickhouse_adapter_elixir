@@ -31,6 +31,17 @@ defmodule ChDriver.Protocol.NativeBlock do
   enough to prove out `SELECT 1` / `SELECT number FROM system.numbers` and
   to skip over the columns ClickHouse's own ProfileEvents packet sends
   alongside every query result (String, DateTime, UInt64, Enum8, Int64).
+
+  `Nullable(T)` is supported as a wrapper around any of the above: on the
+  wire it is a `row_count`-byte null map (1 = null, 0 = not null,
+  confirmed against ClickHouse's `ColumnNullable.cpp`
+  `deserializeBinaryBulkWithMultipleStreams`) immediately followed by `T`'s
+  normal column data for *all* rows -- including the null ones, whose
+  underlying value is a meaningless placeholder (typically `T`'s
+  default/zero value) and is discarded rather than decoded. See
+  `type_dispatch/1` for how new wrapper/compound types (Array, Map, ...)
+  should be added alongside `Nullable` -- each gets its own dispatch clause
+  and decoder function rather than deeper `column_codec/1` special-casing.
   """
 
   alias ChDriver.Protocol.Varint
@@ -127,16 +138,64 @@ defmodule ChDriver.Protocol.NativeBlock do
   defp ensure_no_custom_serialization(_other, type),
     do: {:error, {:unsupported_custom_serialization, type}}
 
+  # Top-level type dispatch. Compound/wrapper types that need more than a
+  # single fixed-width-or-string codec (Nullable today; Array/Map/etc in
+  # future work) get their own clause here and their own decoder function
+  # below -- everything else falls through to the plain `column_codec/1`
+  # table. This is the extension point for new wrapper types: add a clause
+  # here that pattern-matches/parses the type string, plus a `decode_*`
+  # function alongside `decode_nullable/3`.
   defp decode_column_data(type, num_rows, binary) do
-    case column_codec(type) do
-      {:fixed, byte_size, unpack} ->
-        decode_fixed_width(binary, num_rows, byte_size, unpack)
+    case parse_nullable(type) do
+      {:ok, inner_type} ->
+        decode_nullable(inner_type, num_rows, binary)
 
-      :string ->
-        decode_strings(binary, num_rows, [])
+      :error ->
+        case column_codec(type) do
+          {:fixed, byte_size, unpack} ->
+            decode_fixed_width(binary, num_rows, byte_size, unpack)
 
-      :unsupported ->
-        {:error, {:unsupported_type, type}}
+          :string ->
+            decode_strings(binary, num_rows, [])
+
+          :unsupported ->
+            {:error, {:unsupported_type, type}}
+        end
+    end
+  end
+
+  # Parses ClickHouse's `Nullable(T)` wrapper syntax, returning the inner
+  # type string. Not a general parenthesis-balancer -- just strips the
+  # leading `Nullable(` and trailing `)` -- but that's sufficient even for
+  # a parameterized inner type like `Nullable(DateTime(3))`, since the
+  # outer `)` is always the last byte of the whole type string.
+  defp parse_nullable("Nullable(" <> rest) when byte_size(rest) > 0 do
+    case String.split_at(rest, byte_size(rest) - 1) do
+      {inner, ")"} -> {:ok, inner}
+      _ -> :error
+    end
+  end
+
+  defp parse_nullable(_type), do: :error
+
+  # `Nullable(T)`'s wire format (confirmed against ClickHouse's
+  # `ColumnNullable.cpp` and cross-referenced with clickhouse-driver
+  # Python's `columns/nullablecolumn.py`): a `num_rows`-byte null map
+  # (1 = null, 0 = not null) immediately followed by `T`'s own column data
+  # for *all* `num_rows` rows. The underlying value for a null row is a
+  # meaningless placeholder and is discarded here rather than decoded.
+  defp decode_nullable(inner_type, num_rows, binary) do
+    with {:ok, null_map, rest} <- decode_fixed_width(binary, num_rows, 1, fn <<v::8>> -> v end),
+         {:ok, values, rest} <- decode_column_data(inner_type, num_rows, rest) do
+      combined =
+        null_map
+        |> Enum.zip(values)
+        |> Enum.map(fn
+          {1, _value} -> nil
+          {0, value} -> value
+        end)
+
+      {:ok, combined, rest}
     end
   end
 

@@ -88,20 +88,34 @@ defmodule ChDriver.QueryTest do
       assert rows == []
     end
 
-    # Documents a known driver limitation rather than a bug: NativeBlock's
-    # type decoder (see `ChDriver.Protocol.NativeBlock.column_codec/1`) only
-    # covers a pragmatic subset of ClickHouse's type system and has no case
-    # for `Nullable(...)`. This is *not* a crash or a hang -- the block
-    # decoder cleanly surfaces `{:error, {:unsupported_type, ...}}` up
-    # through `Connection.query/2,3` -- but it does mean any query touching
-    # a Nullable column fails outright today. Adding Nullable support is a
-    # driver feature, out of scope for this integration-test-only task; see
-    # clickhouse_adapter_elixir-8a2.10 notes.
-    test "a Nullable column is a known unsupported type, but fails cleanly (no hang/crash)", %{
+    # Nullable(T) support (clickhouse_adapter_elixir-8a2.17): a NULL value
+    # decodes to `nil`, a present value decodes normally.
+    test "a Nullable column decodes NULL to nil and a present value normally", %{conn: conn} do
+      assert {:ok, %{columns: columns, rows: rows}} =
+               Connection.query(conn, "SELECT CAST(NULL AS Nullable(String)) AS x")
+
+      assert columns == [{"x", "Nullable(String)"}]
+      assert rows == [[nil]]
+
+      assert {:ok, %{columns: columns, rows: rows}} =
+               Connection.query(conn, "SELECT CAST('hello' AS Nullable(String)) AS x")
+
+      assert columns == [{"x", "Nullable(String)"}]
+      assert rows == [["hello"]]
+    end
+
+    # An unsupported inner type still surfaces cleanly through the Nullable
+    # wrapper rather than hanging/crashing -- UUID isn't in
+    # `ChDriver.Protocol.NativeBlock`'s supported-type table yet (that's
+    # tracked separately by clickhouse_adapter_elixir-8a2.19).
+    test "a Nullable wrapping an unsupported inner type fails cleanly (no hang/crash)", %{
       conn: conn
     } do
-      assert {:error, {:unsupported_type, "Nullable(String)"}} =
-               Connection.query(conn, "SELECT CAST(NULL AS Nullable(String)) AS x")
+      assert {:error, {:unsupported_type, "UUID"}} =
+               Connection.query(
+                 conn,
+                 "SELECT CAST(NULL AS Nullable(UUID)) AS x"
+               )
     end
 
     test "INSERT via inline VALUES round-trips through a subsequent SELECT", %{conn: conn} do
