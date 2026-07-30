@@ -22,7 +22,14 @@ defmodule ChDriver.MixProject do
   defp deps do
     [
       {:ch_native, path: "../ch_native"},
-      {:db_connection, "~> 2.0"}
+      {:db_connection, "~> 2.0"},
+      # `Decimal(P, S)` decoding (see `ChDriver.Protocol.NativeBlock`) needs
+      # the `Decimal` struct. Constrained to accept either major version
+      # since `adapter/` (a sibling app depending on this one via `path:`)
+      # already pulls in `decimal ~> 3.0` transitively through `ecto`/
+      # `ecto_sql` -- a hard `~> 2.0` here would make that combination
+      # unresolvable.
+      {:decimal, "~> 2.0 or ~> 3.0"}
     ]
   end
 end

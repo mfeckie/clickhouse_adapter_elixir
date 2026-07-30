@@ -42,6 +42,21 @@ defmodule ChDriver.Protocol.NativeBlock do
   `type_dispatch/1` for how new wrapper/compound types (Array, Map, ...)
   should be added alongside `Nullable` -- each gets its own dispatch clause
   and decoder function rather than deeper `column_codec/1` special-casing.
+
+  Also supported, following the same pattern (each confirmed live against
+  ClickHouse 24.8 -- see the `decode_*` function for each for the exact
+  wire-format details):
+
+    * `Array(T)` for any `T` this module already knows how to decode
+      (including nested wrappers, e.g. `Array(Nullable(String))`).
+    * `Decimal(P, S)` and its fixed-precision aliases `Decimal32(S)` /
+      `Decimal64(S)` / `Decimal128(S)` / `Decimal256(S)`, decoded to
+      `Decimal.t()`.
+    * `UUID`.
+    * `LowCardinality(T)` for any scalar `T` (String, integers, etc).
+
+  Deliberately deferred (not implemented -- see clickhouse_adapter_elixir-8a2.19's
+  closing notes for why): `Map(K, V)`, `IPv4`, `IPv6`, `FixedString(N)`.
   """
 
   alias ChDriver.Protocol.Varint
@@ -151,32 +166,69 @@ defmodule ChDriver.Protocol.NativeBlock do
         decode_nullable(inner_type, num_rows, binary)
 
       :error ->
-        case column_codec(type) do
-          {:fixed, byte_size, unpack} ->
-            decode_fixed_width(binary, num_rows, byte_size, unpack)
+        case parse_array(type) do
+          {:ok, inner_type} ->
+            decode_array(inner_type, num_rows, binary)
 
-          :string ->
-            decode_strings(binary, num_rows, [])
+          :error ->
+            case parse_low_cardinality(type) do
+              {:ok, inner_type} ->
+                decode_low_cardinality(inner_type, num_rows, binary)
 
-          :unsupported ->
-            {:error, {:unsupported_type, type}}
+              :error ->
+                case parse_decimal(type) do
+                  {:ok, precision, scale} ->
+                    decode_decimal(precision, scale, num_rows, binary)
+
+                  :error ->
+                    case column_codec(type) do
+                      {:fixed, byte_size, unpack} ->
+                        decode_fixed_width(binary, num_rows, byte_size, unpack)
+
+                      :string ->
+                        decode_strings(binary, num_rows, [])
+
+                      :unsupported ->
+                        {:error, {:unsupported_type, type}}
+                    end
+                end
+            end
         end
     end
   end
 
-  # Parses ClickHouse's `Nullable(T)` wrapper syntax, returning the inner
-  # type string. Not a general parenthesis-balancer -- just strips the
-  # leading `Nullable(` and trailing `)` -- but that's sufficient even for
-  # a parameterized inner type like `Nullable(DateTime(3))`, since the
-  # outer `)` is always the last byte of the whole type string.
-  defp parse_nullable("Nullable(" <> rest) when byte_size(rest) > 0 do
-    case String.split_at(rest, byte_size(rest) - 1) do
-      {inner, ")"} -> {:ok, inner}
-      _ -> :error
+  # Strips a `Prefix(...)` wrapper down to its inner contents, given the
+  # exact `"Prefix("` (including the opening paren) to match against. Not a
+  # general parenthesis-balancer -- just strips the given prefix and the
+  # trailing `)` -- but that's sufficient even for a parameterized inner
+  # type like `Nullable(DateTime(3))`, since the outer `)` is always the
+  # last byte of the whole type string.
+  defp strip_wrapper(type, prefix) do
+    prefix_size = byte_size(prefix)
+
+    case type do
+      <<^prefix::binary-size(prefix_size), rest::binary>> when byte_size(rest) > 0 ->
+        case String.split_at(rest, byte_size(rest) - 1) do
+          {inner, ")"} -> {:ok, inner}
+          _ -> :error
+        end
+
+      _ ->
+        :error
     end
   end
 
-  defp parse_nullable(_type), do: :error
+  # Parses ClickHouse's `Nullable(T)` wrapper syntax, returning the inner
+  # type string.
+  defp parse_nullable(type), do: strip_wrapper(type, "Nullable(")
+
+  # Parses ClickHouse's `Array(T)` wrapper syntax, returning the inner type
+  # string.
+  defp parse_array(type), do: strip_wrapper(type, "Array(")
+
+  # Parses ClickHouse's `LowCardinality(T)` wrapper syntax, returning the
+  # inner type string.
+  defp parse_low_cardinality(type), do: strip_wrapper(type, "LowCardinality(")
 
   # `Nullable(T)`'s wire format (confirmed against ClickHouse's
   # `ColumnNullable.cpp` and cross-referenced with clickhouse-driver
@@ -199,6 +251,183 @@ defmodule ChDriver.Protocol.NativeBlock do
     end
   end
 
+  # `Array(T)`'s wire format (confirmed against ClickHouse's
+  # `ColumnArray.cpp` `deserializeBinaryBulkWithMultipleStreams`, and
+  # cross-referenced with clickhouse-driver Python's
+  # `columns/arraycolumn.py`): a `num_rows`-long array of cumulative
+  # little-endian `UInt64` offsets (offsets[i] is the end index, exclusive,
+  # of row i's elements in the flattened value array below -- so
+  # `offsets[num_rows - 1]` is the total element count across every row),
+  # immediately followed by the flattened element values for *all* rows,
+  # decoded via `T`'s own `decode_column_data/3` (recursively -- this is
+  # what lets `Array(Nullable(String))`, `Array(Array(UInt32))`, etc. all
+  # work for free).
+  defp decode_array(inner_type, num_rows, binary) do
+    with {:ok, offsets, rest} <-
+           decode_fixed_width(binary, num_rows, 8, fn <<v::unsigned-little-64>> -> v end),
+         total_elements = List.last(offsets, 0),
+         {:ok, flat_values, rest} <- decode_column_data(inner_type, total_elements, rest) do
+      {:ok, split_by_offsets(flat_values, offsets), rest}
+    end
+  end
+
+  # Splits `values` (the flattened element array) back into per-row lists
+  # using `Array(T)`'s cumulative offsets, e.g. `values = [1, 2, 3, 4, 5]`
+  # and `offsets = [2, 2, 5]` (row 0 has 2 elements, row 1 has 0, row 2 has
+  # 3) splits into `[[1, 2], [], [3, 4, 5]]`.
+  defp split_by_offsets(values, offsets) do
+    {rows, _rest} =
+      Enum.map_reduce(offsets, {values, 0}, fn offset, {remaining, previous_offset} ->
+        {row, rest} = Enum.split(remaining, offset - previous_offset)
+        {row, {rest, offset}}
+      end)
+
+    rows
+  end
+
+  # `Decimal(P, S)`'s wire format (confirmed against ClickHouse's
+  # `ColumnDecimal.h`/`DataTypeDecimalBase.h`, and cross-referenced with
+  # clickhouse-driver Python's `columns/decimalcolumn.py`): a fixed-width
+  # *signed* little-endian integer holding the unscaled value, whose byte
+  # width is chosen from the precision `P` alone (not stored on the wire --
+  # `decimal_byte_size/1` mirrors ClickHouse's own
+  # `DecimalUtils::decimalWidth`/`DataTypeDecimal` precision tiers), scaled
+  # by `10^-S` into a `Decimal.t()`. `Decimal32(S)`/`Decimal64(S)`/
+  # `Decimal128(S)`/`Decimal256(S)` are just fixed-precision aliases (9, 18,
+  # 38, and 76 respectively) for this same encoding.
+  defp decode_decimal(precision, scale, num_rows, binary) do
+    byte_size = decimal_byte_size(precision)
+    bits = byte_size * 8
+
+    unpack = fn chunk ->
+      <<unscaled::signed-little-size(bits)>> = chunk
+      sign = if unscaled < 0, do: -1, else: 1
+      Decimal.new(sign, abs(unscaled), -scale)
+    end
+
+    decode_fixed_width(binary, num_rows, byte_size, unpack)
+  end
+
+  defp decimal_byte_size(precision) when precision <= 9, do: 4
+  defp decimal_byte_size(precision) when precision <= 18, do: 8
+  defp decimal_byte_size(precision) when precision <= 38, do: 16
+  defp decimal_byte_size(_precision), do: 32
+
+  # Parses `Decimal(P, S)` and the `Decimal32(S)`/`Decimal64(S)`/
+  # `Decimal128(S)`/`Decimal256(S)` fixed-precision aliases, returning
+  # `{:ok, precision, scale}`.
+  defp parse_decimal("Decimal(" <> rest) do
+    case Regex.run(~r/^(\d+)\s*,\s*(\d+)\)$/, rest) do
+      [_, precision, scale] -> {:ok, String.to_integer(precision), String.to_integer(scale)}
+      nil -> :error
+    end
+  end
+
+  defp parse_decimal("Decimal32(" <> rest), do: parse_decimal_alias(rest, 9)
+  defp parse_decimal("Decimal64(" <> rest), do: parse_decimal_alias(rest, 18)
+  defp parse_decimal("Decimal128(" <> rest), do: parse_decimal_alias(rest, 38)
+  defp parse_decimal("Decimal256(" <> rest), do: parse_decimal_alias(rest, 76)
+  defp parse_decimal(_type), do: :error
+
+  defp parse_decimal_alias(rest, precision) do
+    case Regex.run(~r/^(\d+)\)$/, rest) do
+      [_, scale] -> {:ok, precision, String.to_integer(scale)}
+      nil -> :error
+    end
+  end
+
+  # `UUID`'s wire format (confirmed live against ClickHouse 24.8 by
+  # `reinterpretAsFixedString`-ing a known UUID and comparing raw bytes
+  # against its text representation): 16 bytes, laid out as the UUID's
+  # standard 16 text-representation bytes with *each 8-byte half
+  # byte-reversed independently* -- i.e. NOT the naive byte order, and NOT
+  # a swap of the two halves either. Concretely, for UUID
+  # `61f0c404-5cb3-11e7-907b-a6006ad3dba0` (standard bytes
+  # `61 f0 c4 04 5c b3 11 e7 90 7b a6 00 6a d3 db a0`), ClickHouse's raw
+  # in-memory/wire bytes are
+  # `e7 11 b3 5c 04 c4 f0 61 a0 db d3 6a 00 a6 7b 90` -- reversing bytes
+  # 0..7 and, separately, bytes 8..15 of the wire form recovers the
+  # standard form byte-for-byte.
+  defp decode_uuid(<<hi::binary-size(8), lo::binary-size(8)>>) do
+    hex = Base.encode16(reverse_bytes(hi) <> reverse_bytes(lo), case: :lower)
+    <<a::binary-8, b::binary-4, c::binary-4, d::binary-4, e::binary-12>> = hex
+    a <> "-" <> b <> "-" <> c <> "-" <> d <> "-" <> e
+  end
+
+  defp reverse_bytes(binary) do
+    binary |> :binary.bin_to_list() |> Enum.reverse() |> :binary.list_to_bin()
+  end
+
+  # `LowCardinality(T)`'s wire format is a dictionary-encoded column
+  # (confirmed live against ClickHouse 24.8, byte-for-byte, against a real
+  # `LowCardinality(String)` column with repeated and distinct values --
+  # cross-referenced with `ColumnLowCardinality.cpp`/
+  # `SerializationLowCardinality.cpp` and clickhouse-driver Python's
+  # `columns/lowcardinalitycolumn.py`):
+  #
+  #     key_version (UInt64) -- always 1
+  #       (`SharedDictionariesWithAdditionalKeys`); not otherwise used here.
+  #     index_type_and_flags (UInt64) -- the low byte is the *index type*
+  #       (0 = UInt8, 1 = UInt16, 2 = UInt32, 3 = UInt64 -- the width of
+  #       each per-row dictionary index below); the remaining bits are
+  #       flags (bit 9 = HasAdditionalKeysBit, bit 10 =
+  #       NeedUpdateDictionaryBit) that are always set for a
+  #       single-block/non-globally-shared dictionary like this driver only
+  #       ever sees, and aren't otherwise interpreted here.
+  #     dictionary_size (UInt64) -- number of entries in the dictionary
+  #       that follows, including its implicit index-0 "default value"
+  #       entry (`""` for String, `0` for numeric types, etc).
+  #     dictionary_size entries of `T`'s own normal column encoding (e.g.
+  #       length-prefixed strings for `LowCardinality(String)`) -- decoded
+  #       via `T`'s own `decode_column_data/3`, same recursive pattern as
+  #       `Array`/`Nullable`.
+  #     index_count (UInt64) -- the number of per-row indices that follow;
+  #       equal to this column's `num_rows`.
+  #     index_count little-endian unsigned integers, each `index_type`
+  #       bytes wide, one per row -- each is an index into the dictionary
+  #       above.
+  # A block with zero rows (ClickHouse sends one of these as a
+  # structure-only "header" block ahead of the real data block(s) for every
+  # query) writes zero bytes of column data for `LowCardinality`, exactly
+  # like every other type here -- confirmed live: attempting to parse the
+  # `key_version`/`index_type_and_flags`/`dictionary_size` fields
+  # unconditionally hangs/times out the connection on an empty header
+  # block, since there are no such bytes to read when there are no rows.
+  defp decode_low_cardinality(_inner_type, 0, binary), do: {:ok, [], binary}
+
+  defp decode_low_cardinality(inner_type, _num_rows, binary) do
+    with {:ok, [_key_version], rest} <-
+           decode_fixed_width(binary, 1, 8, fn <<v::unsigned-little-64>> -> v end),
+         {:ok, [index_type_and_flags], rest} <-
+           decode_fixed_width(rest, 1, 8, fn <<v::unsigned-little-64>> -> v end),
+         {:ok, [dictionary_size], rest} <-
+           decode_fixed_width(rest, 1, 8, fn <<v::unsigned-little-64>> -> v end),
+         {:ok, dictionary, rest} <- decode_column_data(inner_type, dictionary_size, rest),
+         {:ok, [index_count], rest} <-
+           decode_fixed_width(rest, 1, 8, fn <<v::unsigned-little-64>> -> v end),
+         index_byte_size = index_byte_size(index_type_and_flags),
+         {:ok, indexes, rest} <-
+           decode_fixed_width(rest, index_count, index_byte_size, &decode_unsigned_le/1) do
+      dictionary_tuple = List.to_tuple(dictionary)
+      values = Enum.map(indexes, &elem(dictionary_tuple, &1))
+      {:ok, values, rest}
+    end
+  end
+
+  defp index_byte_size(index_type_and_flags) do
+    case Bitwise.band(index_type_and_flags, 0xFF) do
+      0 -> 1
+      1 -> 2
+      2 -> 4
+      3 -> 8
+    end
+  end
+
+  defp decode_unsigned_le(<<v::unsigned-little-8>>), do: v
+  defp decode_unsigned_le(<<v::unsigned-little-16>>), do: v
+  defp decode_unsigned_le(<<v::unsigned-little-32>>), do: v
+  defp decode_unsigned_le(<<v::unsigned-little-64>>), do: v
+
   # A pragmatic subset of ClickHouse's type system: fixed-width integer and
   # float types (by exact name), String, and a couple of common wrapper
   # types (DateTime, Enum8/Enum16) that show up in ClickHouse's own
@@ -216,6 +445,7 @@ defmodule ChDriver.Protocol.NativeBlock do
   defp column_codec("Float64"), do: {:fixed, 8, fn <<v::float-little-64>> -> v end}
   defp column_codec("DateTime"), do: {:fixed, 4, &decode_datetime/1}
   defp column_codec("String"), do: :string
+  defp column_codec("UUID"), do: {:fixed, 16, &decode_uuid/1}
 
   defp column_codec(type) do
     cond do

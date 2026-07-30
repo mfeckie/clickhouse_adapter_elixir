@@ -157,6 +157,15 @@ defmodule Ecto.Adapters.ClickHouse.Connection do
   defp encode_literal(%Date{} = d), do: [?', Date.to_string(d), ?']
   defp encode_literal(b) when is_binary(b), do: [?', escape_string(b), ?']
 
+  # ClickHouse's `Array(T)` literal syntax (`[elem1, elem2, ...]`) -- used
+  # for `Array(T)`-typed INSERT parameters (clickhouse_adapter_elixir-8a2.19).
+  # Each element is encoded via this same `encode_literal/1`, so a list of
+  # strings/integers/`Decimal`s/etc all work for free, recursively (this is
+  # also what makes `Array(Array(T))` "just work").
+  defp encode_literal(list) when is_list(list) do
+    [?[, Enum.map_intersperse(list, ?,, &encode_literal/1), ?]]
+  end
+
   defp encode_literal(other) do
     raise ArgumentError,
           "the ClickHouse adapter does not yet know how to encode #{inspect(other)} as a SQL literal"
@@ -550,7 +559,41 @@ defmodule Ecto.Adapters.ClickHouse.Connection do
   defp column_type!(:date), do: "Date"
   defp column_type!(:decimal), do: "Decimal(38, 9)"
 
-  defp column_type!(other) do
+  # `{:array, inner_type}` is Ecto's own built-in shorthand for an array
+  # column (`add(:tags, {:array, :string})` in a migration) -- maps
+  # straight onto ClickHouse's `Array(T)` (clickhouse_adapter_elixir-8a2.19),
+  # recursing so `{:array, :integer}` -> `Array(Int32)`, etc.
+  defp column_type!({:array, inner_type}), do: "Array(#{column_type!(inner_type)})"
+
+  # A raw ClickHouse type given verbatim as a *quoted atom* (e.g.
+  # `add(:status, :"LowCardinality(String)")`) -- `Ecto.Migration.add/3`
+  # validates its `type` argument itself before this adapter ever sees it,
+  # and only accepts atoms/quoted-atoms/composite tuples/references (a
+  # plain string is rejected outright with "invalid migration type",
+  # confirmed live), so a quoted atom -- exactly what Ecto's own error
+  # message suggests for adapter-specific types -- is the escape hatch here
+  # rather than a raw binary. This is for ClickHouse-specific column types
+  # with no clean Ecto-type equivalent (`LowCardinality(T)` chief among
+  # them: it's transparent to callers -- `ChDriver.Protocol.NativeBlock`
+  # decodes it to the same Elixir value `T` would decode to on its own --
+  # so there's no dedicated Ecto migration type for it, just this
+  # passthrough plus a plain `field :status, :string` (or whatever `T`
+  # maps to) on the schema side). Guarded on containing `(` so a genuine
+  # typo'd Ecto type atom (e.g. `:sting`) still raises the helpful error
+  # below instead of silently becoming bogus DDL.
+  defp column_type!(other) when is_atom(other) do
+    raw = Atom.to_string(other)
+
+    if String.contains?(raw, "(") do
+      raw
+    else
+      raise_unknown_column_type!(other)
+    end
+  end
+
+  defp column_type!(other), do: raise_unknown_column_type!(other)
+
+  defp raise_unknown_column_type!(other) do
     raise ArgumentError,
           "the ClickHouse adapter's migration DDL does not know how to map the Ecto type " <>
             "#{inspect(other)} to a ClickHouse column type -- use a raw SQL string via " <>
