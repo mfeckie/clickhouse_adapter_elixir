@@ -61,6 +61,12 @@ jobs:
           nif-version: ${{ matrix.nif }}
           use-cross: ${{ matrix.job.use-cross }}
           project-dir: "ch_codec/native/chcodec_native"
+          # native/chcodec_native is a member of the ch_codec/Cargo.toml
+          # workspace, so cargo would otherwise place build output in the
+          # workspace root's target/ dir. The action's rename step expects
+          # it under <project-dir>/target/<triple>/release/, so force cargo
+          # to put it there instead of touching the workspace layout.
+          cargo-args: "--target-dir target"
 
       - uses: actions/attest@v4
         with:
