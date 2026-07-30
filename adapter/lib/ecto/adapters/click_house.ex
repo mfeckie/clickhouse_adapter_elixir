@@ -105,12 +105,15 @@ defmodule Ecto.Adapters.ClickHouse do
   def storage_up(opts) do
     database = fetch_database!(opts)
 
-    case run_storage_query("SELECT 1 FROM system.databases WHERE name = " <> quote_literal(database), opts) do
+    case run_storage_query(
+           "SELECT 1 FROM system.databases WHERE name = " <> quote_literal(database),
+           opts
+         ) do
       {:ok, %{num_rows: n}} when n > 0 ->
         {:error, :already_up}
 
       {:ok, _} ->
-        case run_storage_query(~s(CREATE DATABASE "#{database}"), opts) do
+        case run_storage_query(~s(CREATE DATABASE #{quote_identifier(database)}), opts) do
           {:ok, _} -> :ok
           {:error, error} -> {:error, Exception.message(error)}
         end
@@ -124,7 +127,7 @@ defmodule Ecto.Adapters.ClickHouse do
   def storage_down(opts) do
     database = fetch_database!(opts)
 
-    case run_storage_query(~s(DROP DATABASE "#{database}"), opts) do
+    case run_storage_query(~s(DROP DATABASE #{quote_identifier(database)}), opts) do
       {:ok, _} ->
         :ok
 
@@ -144,7 +147,10 @@ defmodule Ecto.Adapters.ClickHouse do
   def storage_status(opts) do
     database = fetch_database!(opts)
 
-    case run_storage_query("SELECT 1 FROM system.databases WHERE name = " <> quote_literal(database), opts) do
+    case run_storage_query(
+           "SELECT 1 FROM system.databases WHERE name = " <> quote_literal(database),
+           opts
+         ) do
       {:ok, %{num_rows: 0}} -> :down
       {:ok, %{num_rows: n}} when n > 0 -> :up
       {:error, error} -> {:error, error}
@@ -153,8 +159,11 @@ defmodule Ecto.Adapters.ClickHouse do
 
   defp fetch_database!(opts) do
     case Keyword.fetch(opts, :database) do
-      {:ok, database} when is_binary(database) -> database
-      _ -> raise ArgumentError, "storage_up/storage_down/storage_status require a :database option"
+      {:ok, database} when is_binary(database) ->
+        database
+
+      _ ->
+        raise ArgumentError, "storage_up/storage_down/storage_status require a :database option"
     end
   end
 
@@ -189,10 +198,27 @@ defmodule Ecto.Adapters.ClickHouse do
 
   # Same identifier-safety rule as Connection.quote_name/1: reject anything
   # containing a double quote rather than trying to escape it, since this is
-  # used to build a raw literal for a WHERE clause, not just an identifier.
+  # used to build a raw `CREATE DATABASE`/`DROP DATABASE` identifier, not a
+  # string literal.
+  defp quote_identifier(value) do
+    if String.contains?(value, "\"") do
+      raise ArgumentError, "bad database name #{inspect(value)} (\" is not permitted)"
+    end
+
+    "\"" <> value <> "\""
+  end
+
+  # Used to build a raw single-quoted string literal for a WHERE clause
+  # (`system.databases` lookup), not an identifier. Reject rather than
+  # escape: besides an embedded `'` breaking out of the literal outright, a
+  # lone trailing `\` would also be dangerous left unescaped -- ClickHouse
+  # string literals honor backslash-escaping (see
+  # `Connection.escape_string/1`), so `'#{value}'` with `value` ending in an
+  # odd number of backslashes would escape away the closing quote and leave
+  # the literal unterminated instead of raising a clean parse error.
   defp quote_literal(value) do
-    if String.contains?(value, "'") do
-      raise ArgumentError, "bad database name #{inspect(value)} (' is not permitted)"
+    if String.contains?(value, "'") or String.contains?(value, "\\") do
+      raise ArgumentError, "bad database name #{inspect(value)} (' and \\ are not permitted)"
     end
 
     "'" <> value <> "'"

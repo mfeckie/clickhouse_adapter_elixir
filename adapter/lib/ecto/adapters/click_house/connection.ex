@@ -467,7 +467,10 @@ defmodule Ecto.Adapters.ClickHouse.Connection do
         quote_name(name)
       end
 
-    order_by = if primary_key_columns == [], do: "tuple()", else: [?(, Enum.intersperse(primary_key_columns, ?,), ?)]
+    order_by =
+      if primary_key_columns == [],
+        do: "tuple()",
+        else: [?(, Enum.intersperse(primary_key_columns, ?,), ?)]
 
     ["ENGINE = MergeTree ORDER BY " | order_by]
   end
@@ -489,7 +492,9 @@ defmodule Ecto.Adapters.ClickHouse.Connection do
     # currently fails with `{:unsupported_type, "Nullable(...)"}`, confirmed
     # live. Pass `null: true` explicitly if you need a nullable column *and*
     # don't plan to `SELECT` it back through this adapter yet.
-    nullable? = Keyword.get(opts, :null, false) == true and not Keyword.get(opts, :primary_key, false)
+    nullable? =
+      Keyword.get(opts, :null, false) == true and not Keyword.get(opts, :primary_key, false)
+
     type_sql = if nullable?, do: ["Nullable(", base_type, ?)], else: base_type
 
     [quote_name(name), " ", type_sql]
