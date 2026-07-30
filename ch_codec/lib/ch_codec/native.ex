@@ -9,11 +9,7 @@ defmodule ChCodec.Native do
     otp_app: :ch_codec,
     crate: "chcodec_native",
     base_url: "#{github_url}/releases/download/ch_codec-v#{version}",
-    # TODO: no ch_codec-v#{version} release has been published yet, so there
-    # is nothing for RustlerPrecompiled to download -- force a local build
-    # unconditionally for now. Once CI publishes precompiled artifacts,
-    # switch back to `System.get_env("FORCE_COMPILE") in ["1", "true"]`.
-    force_build: true,
+    force_build: System.get_env("FORCE_COMPILE") in ["1", "true"],
     version: version,
     targets: ~w(
       aarch64-apple-darwin
