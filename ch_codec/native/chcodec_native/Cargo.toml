@@ -8,4 +8,6 @@ edition = "2021"
 crate-type = ["cdylib"]
 
 [dependencies]
+cityhash-rs = "1.0.1"
+lz4_flex = "0.14.0"
 rustler = "0.38.0"
