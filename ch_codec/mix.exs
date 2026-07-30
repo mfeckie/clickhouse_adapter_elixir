@@ -2,10 +2,11 @@ defmodule ChCodec.MixProject do
   use Mix.Project
 
   @version "0.1.0"
-  # TODO: replace with this project's actual GitHub repo once one exists —
-  # RustlerPrecompiled.base_url (lib/ch_codec/native.ex) derives its release
-  # download URL from package.links["GitHub"].
-  @source_url "https://github.com/CHANGEME/ch_codec"
+  # ch_codec is a sibling project inside the clickhouse_adapter_elixir repo,
+  # not its own repo -- RustlerPrecompiled.base_url (lib/ch_codec/native.ex)
+  # derives its release download URL from package.links["GitHub"], tagged
+  # with a "ch_codec-" prefix so releases don't collide with the adapter's.
+  @source_url "https://github.com/mfeckie/clickhouse_adapter_elixir"
 
   def project do
     [
