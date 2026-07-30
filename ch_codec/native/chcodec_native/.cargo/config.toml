@@ -1,0 +1,10 @@
+# musl targets statically link the C runtime by default, which Rust cannot
+# use to produce a cdylib (needed to load this as an Erlang NIF) -- it fails
+# with "cannot produce cdylib ... as the target does not support these crate
+# types". Disabling crt-static switches these targets to dynamic linking.
+# See https://github.com/rust-lang/rust/issues/59302.
+[target.x86_64-unknown-linux-musl]
+rustflags = ["-C", "target-feature=-crt-static"]
+
+[target.aarch64-unknown-linux-musl]
+rustflags = ["-C", "target-feature=-crt-static"]
