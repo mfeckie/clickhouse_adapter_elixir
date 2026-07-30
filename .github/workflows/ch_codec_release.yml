@@ -1,0 +1,79 @@
+name: ch_codec release
+
+# Adapted from the reference workflow at
+# https://github.com/philss/rustler_precompilation_example/blob/main/.github/workflows/release.yml
+# for this repo's monorepo layout (ch_codec/ subdirectory) and its
+# `ch_codec-v*` tag prefix (see ch_codec/mix.exs -- ch_codec shares this repo
+# with the adapter, so releases are namespaced to avoid tag collisions).
+
+on:
+  push:
+    tags:
+      - "ch_codec-v*"
+  workflow_dispatch: {}
+
+jobs:
+  build_release:
+    name: NIF ${{ matrix.nif }} - ${{ matrix.job.target }} (${{ matrix.job.os }})
+    runs-on: ${{ matrix.job.os }}
+    permissions:
+      # For creating a new release.
+      contents: write
+      # The following are needed for the "actions/attest" GH Action.
+      id-token: write
+      attestations: write
+      artifact-metadata: write
+    strategy:
+      fail-fast: false
+      matrix:
+        # Keep in sync with the `targets` list in ch_codec/lib/ch_codec/native.ex.
+        nif: ["2.15"]
+        job:
+          - { target: aarch64-apple-darwin, os: macos-15 }
+          - { target: x86_64-apple-darwin, os: macos-15-intel }
+          - { target: aarch64-unknown-linux-gnu, os: ubuntu-22.04, use-cross: true }
+          - { target: aarch64-unknown-linux-musl, os: ubuntu-22.04, use-cross: true }
+          - { target: x86_64-unknown-linux-gnu, os: ubuntu-22.04 }
+          - { target: x86_64-unknown-linux-musl, os: ubuntu-22.04, use-cross: true }
+
+    steps:
+      - name: Checkout source code
+        uses: actions/checkout@v6
+
+      - name: Extract project version
+        shell: bash
+        run: |
+          echo "PROJECT_VERSION=$(sed -n 's/^  @version "\(.*\)"/\1/p' ch_codec/mix.exs | head -n1)" >> $GITHUB_ENV
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+          target: ${{ matrix.job.target }}
+
+      - name: Build the project
+        id: build-crate
+        uses: philss/rustler-precompiled-action@v1.1.5
+        with:
+          project-name: chcodec_native
+          project-version: ${{ env.PROJECT_VERSION }}
+          target: ${{ matrix.job.target }}
+          nif-version: ${{ matrix.nif }}
+          use-cross: ${{ matrix.job.use-cross }}
+          project-dir: "ch_codec/native/chcodec_native"
+
+      - uses: actions/attest@v4
+        with:
+          subject-path: ${{ steps.build-crate.outputs.file-path }}
+
+      - name: Artifact upload
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ steps.build-crate.outputs.file-name }}
+          path: ${{ steps.build-crate.outputs.file-path }}
+
+      - name: Publish archives and packages
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            ${{ steps.build-crate.outputs.file-path }}
