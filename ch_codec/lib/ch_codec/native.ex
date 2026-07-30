@@ -9,7 +9,7 @@ defmodule ChCodec.Native do
     otp_app: :ch_codec,
     crate: "chcodec_native",
     base_url: "#{github_url}/releases/download/ch_codec-v#{version}",
-    force_build: System.get_env("CH_CODEC_BUILD") in ["1", "true"],
+    force_build: System.get_env("FORCE_COMPILE") in ["1", "true"],
     version: version,
     targets: ~w(
       aarch64-apple-darwin
