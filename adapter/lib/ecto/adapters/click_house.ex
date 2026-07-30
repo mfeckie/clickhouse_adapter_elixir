@@ -64,6 +64,31 @@ defmodule Ecto.Adapters.ClickHouse do
 
   @behaviour Ecto.Adapter.Storage
 
+  ## Type loading -- ClickHouse has no native boolean wire type; `UInt8` is
+  ## the idiomatic encoding for a `:boolean` Ecto field (the same convention
+  ## MyXQL follows for MySQL's TINYINT-backed booleans), so
+  ## `ChDriver.Protocol.NativeBlock` hands back the raw integer `0`/`1` for
+  ## such a column (see that module's moduledoc) rather than inventing a
+  ## driver-level boolean type. Ecto's own built-in `:boolean` type loader
+  ## only accepts an actual `true`/`false` term and raises otherwise, so this
+  ## coerces the raw integer *before* it reaches that built-in loader --
+  ## overriding the `loaders/2` that `use Ecto.Adapters.SQL` defines by
+  ## default (`def loaders(_, type), do: [type]`, i.e. no coercion at all).
+  ##
+  ## `DateTime` columns need no equivalent override: `NativeBlock` now
+  ## decodes ClickHouse's `DateTime` type directly into a UTC `DateTime.t()`
+  ## (clickhouse_adapter_elixir-8a2.18), and Ecto's built-in `:naive_datetime`
+  ## / `:utc_datetime` loaders already accept a UTC `DateTime.t()` as input
+  ## (see `Ecto.Type.load/2`), so the default `loaders/2` clause below is
+  ## sufficient for both.
+  @impl true
+  def loaders(:boolean, type), do: [&load_boolean/1, type]
+  def loaders(_primitive_type, type), do: [type]
+
+  defp load_boolean(0), do: {:ok, false}
+  defp load_boolean(1), do: {:ok, true}
+  defp load_boolean(other), do: {:ok, other}
+
   ## Schema -- insert/6 is overridden because ClickHouse's native protocol
   ## reports 0 rows/no affected-row count for a successful INSERT (there is
   ## no equivalent of MySQL/Postgres's "rows affected"), so the default

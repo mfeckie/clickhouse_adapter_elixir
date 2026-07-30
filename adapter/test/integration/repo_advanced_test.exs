@@ -19,11 +19,12 @@ defmodule Ecto.Adapters.ClickHouse.RepoAdvancedIntegrationTest do
     * a string literal containing a single quote, a backslash, and
       multi-byte unicode round-tripping correctly through the inline-literal
       SQL generation in `Ecto.Adapters.ClickHouse.Connection`.
-    * two documented, known gaps: `:boolean` Ecto fields backed by
-      ClickHouse's conventional `UInt8` boolean encoding, and `DateTime`
-      columns mapped to `:naive_datetime`/`:utc_datetime` Ecto fields, do not
-      round-trip through `Repo.all/1` today (see the two dedicated tests
-      below for why).
+    * `:boolean` Ecto fields backed by ClickHouse's conventional `UInt8`
+      boolean encoding, and `DateTime` columns mapped to
+      `:naive_datetime`/`:utc_datetime` Ecto fields, round-tripping correctly
+      through `Repo.insert!/1`/`Repo.all/1` (clickhouse_adapter_elixir-8a2.18
+      -- see the dedicated tests below; this used to be a documented gap
+      where both raised `ArgumentError` at load time).
 
   Requires `docker compose up -d` (from `adapter/`) to have been run first.
   """
@@ -37,9 +38,8 @@ defmodule Ecto.Adapters.ClickHouse.RepoAdvancedIntegrationTest do
   end
 
   # Deliberately excludes the table's `active UInt8` and `recorded_at
-  # DateTime` columns -- see `BoolMeasurement`/`TimestampMeasurement` below
-  # and their dedicated tests for why selecting those columns back through
-  # plain Ecto currently fails.
+  # DateTime` columns -- see `BoolMeasurement`/`TimestampMeasurement` below,
+  # which map those columns to `:boolean`/`:naive_datetime` fields instead.
   defmodule Measurement do
     use Ecto.Schema
 
@@ -54,7 +54,7 @@ defmodule Ecto.Adapters.ClickHouse.RepoAdvancedIntegrationTest do
   end
 
   # Same table, but also maps the `active UInt8` column to an Ecto
-  # `:boolean` field -- used only by the dedicated "known gap" test below.
+  # `:boolean` field -- used only by the dedicated round-trip test below.
   defmodule BoolMeasurement do
     use Ecto.Schema
 
@@ -65,9 +65,9 @@ defmodule Ecto.Adapters.ClickHouse.RepoAdvancedIntegrationTest do
     end
   end
 
-  # Same table, but also maps the `recorded_at DateTime` column to an Ecto
-  # `:naive_datetime` field -- used only by the dedicated "known gap" test
-  # below.
+  # Same table, but also maps the `recorded_at DateTime` column to Ecto
+  # `:naive_datetime` and `:utc_datetime` fields -- used only by the
+  # dedicated round-trip tests below.
   defmodule TimestampMeasurement do
     use Ecto.Schema
 
@@ -75,6 +75,16 @@ defmodule Ecto.Adapters.ClickHouse.RepoAdvancedIntegrationTest do
     schema "measurements" do
       field(:id, :integer)
       field(:recorded_at, :naive_datetime)
+    end
+  end
+
+  defmodule UtcTimestampMeasurement do
+    use Ecto.Schema
+
+    @primary_key false
+    schema "measurements" do
+      field(:id, :integer)
+      field(:recorded_at, :utc_datetime)
     end
   end
 
@@ -92,6 +102,15 @@ defmodule Ecto.Adapters.ClickHouse.RepoAdvancedIntegrationTest do
     {:ok, ddl_conn} = ChDriver.start_link(hostname: "localhost", port: 9000)
     {:ok, _} = ChDriver.query(ddl_conn, "DROP TABLE IF EXISTS measurements")
 
+    # `ratio_of_defaults_for_sparse_serialization = 1` disables ClickHouse's
+    # automatic "sparse serialization" for this table -- without it, a
+    # mostly-`0`/default UInt8 column like `active` gets sparse-encoded on
+    # disk once enough default-valued rows accumulate across this file's
+    # tests, and a SELECT then sends it over the wire with
+    # `has_custom_serialization = 1`. `ChDriver.Protocol.NativeBlock`
+    # correctly detects and rejects that (rather than silently misdecoding
+    # it) since it doesn't implement the sparse-column wire format yet --
+    # a real driver gap, not something to work around by accident here.
     {:ok, _} =
       ChDriver.query(
         ddl_conn,
@@ -105,6 +124,7 @@ defmodule Ecto.Adapters.ClickHouse.RepoAdvancedIntegrationTest do
           active UInt8,
           recorded_at DateTime
         ) ENGINE = MergeTree ORDER BY id
+        SETTINGS ratio_of_defaults_for_sparse_serialization = 1
         """
       )
 
@@ -267,53 +287,61 @@ defmodule Ecto.Adapters.ClickHouse.RepoAdvancedIntegrationTest do
              Measurement |> where([m], m.label == ^tricky) |> TestRepo.all()
   end
 
-  test "known gap: a :boolean Ecto field backed by ClickHouse's UInt8 boolean convention does not round-trip through Repo.all/1" do
-    {:ok, ddl_conn} = ChDriver.start_link(hostname: "localhost", port: 9000)
+  test "a :boolean Ecto field backed by ClickHouse's UInt8 boolean convention round-trips through Repo.insert!/Repo.all" do
+    # `Ecto.Adapters.ClickHouse.Connection.encode_literal/1` already writes
+    # `true`/`false` as the SQL literals `1`/`0` (ClickHouse has no native
+    # boolean wire type; `UInt8` is the idiomatic encoding), so the insert
+    # side of this has always worked -- it's reading `true`/`false` back out
+    # that used to fail (clickhouse_adapter_elixir-8a2.18): ClickHouse hands
+    # back the raw integer `0`/`1` for a `UInt8` column, and
+    # `Ecto.Adapters.ClickHouse.loaders/2` now coerces that into `false`/
+    # `true` before Ecto's built-in `:boolean` type loader runs (the same
+    # pattern MyXQL uses for MySQL's TINYINT-backed booleans).
+    TestRepo.insert!(%BoolMeasurement{id: 1, active: true})
+    TestRepo.insert!(%BoolMeasurement{id: 2, active: false})
 
-    {:ok, _} =
-      ChDriver.query(
-        ddl_conn,
-        "INSERT INTO measurements (id, label, small_count, big_count, ratio, active, recorded_at) " <>
-          "VALUES (1, 'x', 1, 1, 1.0, 1, '2024-01-01 00:00:00')"
-      )
+    results = BoolMeasurement |> TestRepo.all() |> Enum.sort_by(& &1.id)
 
-    # ClickHouse hands back the raw integer `1` for a `UInt8` column (there's
-    # no native boolean wire type), and this adapter doesn't define a custom
-    # `Ecto.Adapter`-level loader to coerce that into `true`/`false` the way
-    # e.g. MyXQL does for MySQL's TINYINT-backed booleans -- so Ecto's
-    # built-in `:boolean` type rejects it outright at load time. Booleans
-    # aren't usable end-to-end through this adapter yet; store/query the
-    # raw `0`/`1` as a plain `:integer` field instead until a loader is
-    # added.
-    assert_raise ArgumentError, ~r/cannot load `1` as type :boolean/, fn ->
-      BoolMeasurement |> TestRepo.all()
-    end
+    assert [
+             %BoolMeasurement{id: 1, active: true},
+             %BoolMeasurement{id: 2, active: false}
+           ] = results
   end
 
-  test "known gap: a :naive_datetime Ecto field backed by a ClickHouse DateTime column does not round-trip through Repo.all/1" do
-    {:ok, ddl_conn} = ChDriver.start_link(hostname: "localhost", port: 9000)
+  test "a :naive_datetime Ecto field backed by a ClickHouse DateTime column round-trips through Repo.insert!/Repo.all" do
+    # ClickHouse's plain `DateTime` only has second-level precision on the
+    # wire (a little-endian `UInt32` Unix-epoch second count -- see
+    # `ChDriver.Protocol.NativeBlock`'s `decode_datetime/1`); there is no
+    # `DateTime64`/microsecond storage involved here. A `NaiveDateTime` with
+    # microseconds would silently lose them on the way into ClickHouse (the
+    # inline SQL literal ClickHouse parses only has second resolution), so
+    # this test deliberately picks a timestamp with `microsecond: {0, 0}` to
+    # keep the round-trip lossless and unambiguous. Using
+    # `:naive_datetime_usec` against a plain `DateTime` column would truncate
+    # microseconds back to `.000000` on load -- use a `DateTime64(N)` column
+    # (mapped via `:naive_datetime_usec`'s DDL type, see
+    # `Connection.column_type!/1`) if microsecond precision is required.
+    naive = ~N[2024-03-15 12:34:56]
 
-    {:ok, _} =
-      ChDriver.query(
-        ddl_conn,
-        "INSERT INTO measurements (id, label, small_count, big_count, ratio, active, recorded_at) " <>
-          "VALUES (1, 'x', 1, 1, 1.0, 1, '2024-01-01 00:00:00')"
-      )
+    TestRepo.insert!(%TimestampMeasurement{id: 1, recorded_at: naive})
 
-    # Writing a `NaiveDateTime` as an inline SQL literal works fine (see
-    # `Connection.encode_literal/1` -- ClickHouse parses the
-    # `'YYYY-MM-DD HH:MM:SS'` string literal into its `DateTime` column), but
-    # reading it back does not: `ChDriver.Protocol.NativeBlock`'s `DateTime`
-    # column codec decodes to the raw little-endian Unix-epoch `UInt32` off
-    # the wire (see `column_codec("DateTime")`), and this adapter has no
-    # custom loader to turn that integer back into a `NaiveDateTime`/
-    # `DateTime` struct -- so Ecto's built-in `:naive_datetime` type rejects
-    # the raw epoch integer at load time. `DateTime` columns aren't usable
-    # end-to-end through Ecto schemas yet; query them as a plain `:integer`
-    # (Unix timestamp) field, or via a raw `ChDriver.query/2`, until a loader
-    # is added.
-    assert_raise ArgumentError, ~r/cannot load `\d+` as type :naive_datetime/, fn ->
-      TimestampMeasurement |> TestRepo.all()
-    end
+    assert [%TimestampMeasurement{id: 1, recorded_at: ^naive}] =
+             TimestampMeasurement |> TestRepo.all()
+  end
+
+  test "a :utc_datetime Ecto field backed by a ClickHouse DateTime column round-trips through Repo.insert!/Repo.all" do
+    # Confirms live that ClickHouse's plain `DateTime` is timezone-naive
+    # storage (a bare Unix-epoch second count, not tagged with any zone) --
+    # `NativeBlock.decode_datetime/1` always decodes it as UTC, which is the
+    # correct interpretation as long as values are also written as UTC (as
+    # they are here: `Connection.encode_literal/1` renders a `%DateTime{}`
+    # via `DateTime.to_string/1`, and `TestRepo.insert!/1` dumps a
+    # `:utc_datetime` field's `%DateTime{}` un-shifted).
+    utc = DateTime.from_naive!(~N[2024-03-15 12:34:56], "Etc/UTC")
+
+    TestRepo.insert!(%UtcTimestampMeasurement{id: 1, recorded_at: utc})
+
+    assert [%UtcTimestampMeasurement{id: 1, recorded_at: ^utc}] =
+             UtcTimestampMeasurement |> TestRepo.all()
   end
 end

@@ -214,17 +214,30 @@ defmodule ChDriver.Protocol.NativeBlock do
   defp column_codec("Int64"), do: {:fixed, 8, fn <<v::signed-little-64>> -> v end}
   defp column_codec("Float32"), do: {:fixed, 4, fn <<v::float-little-32>> -> v end}
   defp column_codec("Float64"), do: {:fixed, 8, fn <<v::float-little-64>> -> v end}
-  defp column_codec("DateTime"), do: {:fixed, 4, fn <<v::unsigned-little-32>> -> v end}
+  defp column_codec("DateTime"), do: {:fixed, 4, &decode_datetime/1}
   defp column_codec("String"), do: :string
 
   defp column_codec(type) do
     cond do
-      String.starts_with?(type, "DateTime(") -> {:fixed, 4, fn <<v::unsigned-little-32>> -> v end}
+      String.starts_with?(type, "DateTime(") -> {:fixed, 4, &decode_datetime/1}
       String.starts_with?(type, "Enum8(") -> {:fixed, 1, fn <<v::signed-little-8>> -> v end}
       String.starts_with?(type, "Enum16(") -> {:fixed, 2, fn <<v::signed-little-16>> -> v end}
       true -> :unsupported
     end
   end
+
+  # ClickHouse's plain `DateTime` (and `DateTime(timezone)`, whose wire
+  # encoding is identical -- the parameter only affects display/parsing
+  # timezone, not storage) is a little-endian `UInt32` Unix-epoch second
+  # count (confirmed live against ClickHouse 24.8: `SELECT
+  # toUInt32(now())` matches the raw bytes of a `DateTime` column holding
+  # the same instant). There's no fractional-second component -- that's
+  # `DateTime64(N)`, not handled here -- so this always decodes to a
+  # whole-second `DateTime.t()` in `Etc/UTC` (the epoch itself is
+  # timezone-agnostic; `Etc/UTC` is just the zone used to represent it as
+  # an Elixir struct, matching how Ecto's built-in `:naive_datetime`/
+  # `:utc_datetime` types expect a UTC `DateTime` to load from).
+  defp decode_datetime(<<v::unsigned-little-32>>), do: DateTime.from_unix!(v, :second)
 
   defp decode_fixed_width(binary, num_rows, byte_size, unpack) do
     total = num_rows * byte_size

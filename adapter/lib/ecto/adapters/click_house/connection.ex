@@ -135,7 +135,25 @@ defmodule Ecto.Adapters.ClickHouse.Connection do
   # column) -- confirmed live via `Ecto.Migration.SchemaMigration`'s
   # `timestamps updated_at: false` (a `NaiveDateTime`) actually inserting.
   defp encode_literal(%NaiveDateTime{} = ndt), do: [?', NaiveDateTime.to_string(ndt), ?']
-  defp encode_literal(%DateTime{} = dt), do: [?', DateTime.to_string(dt), ?']
+
+  # DateTime.to_string/1 appends a "Z" (or an offset) for anything but a
+  # bare-naive value, and ClickHouse's DateTime literal parser rejects that
+  # suffix outright ("Cannot parse string '... Z' as DateTime: syntax error
+  # at position 19") -- confirmed live. Since ClickHouse's plain `DateTime`
+  # has no offset of its own (see `ChDriver.Protocol.NativeBlock`'s
+  # `decode_datetime/1` moduledoc), only a UTC `DateTime` unambiguously maps
+  # onto it; drop to a NaiveDateTime literal for those and reject anything
+  # else rather than silently writing the wrong instant.
+  defp encode_literal(%DateTime{utc_offset: 0, std_offset: 0} = dt) do
+    [?', dt |> DateTime.to_naive() |> NaiveDateTime.to_string(), ?']
+  end
+
+  defp encode_literal(%DateTime{} = dt) do
+    raise ArgumentError,
+          "the ClickHouse adapter only supports UTC DateTime literals (ClickHouse's DateTime " <>
+            "column type has no offset of its own), got #{inspect(dt)}"
+  end
+
   defp encode_literal(%Date{} = d), do: [?', Date.to_string(d), ?']
   defp encode_literal(b) when is_binary(b), do: [?', escape_string(b), ?']
 
