@@ -102,15 +102,13 @@ defmodule Ecto.Adapters.ClickHouse.RepoAdvancedIntegrationTest do
     {:ok, ddl_conn} = ChDriver.start_link(hostname: "localhost", port: 9000)
     {:ok, _} = ChDriver.query(ddl_conn, "DROP TABLE IF EXISTS measurements")
 
-    # `ratio_of_defaults_for_sparse_serialization = 1` disables ClickHouse's
-    # automatic "sparse serialization" for this table -- without it, a
-    # mostly-`0`/default UInt8 column like `active` gets sparse-encoded on
-    # disk once enough default-valued rows accumulate across this file's
-    # tests, and a SELECT then sends it over the wire with
-    # `has_custom_serialization = 1`. `ChDriver.Protocol.NativeBlock`
-    # correctly detects and rejects that (rather than silently misdecoding
-    # it) since it doesn't implement the sparse-column wire format yet --
-    # a real driver gap, not something to work around by accident here.
+    # No `ratio_of_defaults_for_sparse_serialization` override here: a
+    # mostly-`0`/default UInt8 column like `active` will legitimately get
+    # sparse-encoded on disk once enough default-valued rows accumulate
+    # across this file's tests, and `ChDriver.Protocol.NativeBlock` now
+    # decodes that correctly (clickhouse_adapter_elixir-8a2.20; see
+    # `ChDriver.SparseTest` for dedicated live coverage) -- this table no
+    # longer needs to work around it.
     {:ok, _} =
       ChDriver.query(
         ddl_conn,
@@ -124,7 +122,6 @@ defmodule Ecto.Adapters.ClickHouse.RepoAdvancedIntegrationTest do
           active UInt8,
           recorded_at DateTime
         ) ENGINE = MergeTree ORDER BY id
-        SETTINGS ratio_of_defaults_for_sparse_serialization = 1
         """
       )
 
