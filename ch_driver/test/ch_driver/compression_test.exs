@@ -5,27 +5,17 @@ defmodule ChDriver.CompressionTest do
 
   @moduletag :integration
 
-  # KNOWN BLOCKING BUG, tracked as `clickhouse_adapter_elixir-g8o` (blocks
-  # `clickhouse_adapter_elixir-szk.11`, this feature): `ChCodec.cityhash128/1`
-  # (ch_codec/native/chcodec_native/src/lib.rs) calls
+  # Formerly blocked by `clickhouse_adapter_elixir-g8o`: `ChCodec.cityhash128/1`
+  # (ch_codec/native/chcodec_native/src/lib.rs) called
   # `cityhash_rs::cityhash_103_128` (CityHash v1.0.3), but ClickHouse's wire
   # checksum for compressed blocks is computed with its own vendored
   # **v1.0.2** CityHash -- a different algorithm, not just a different byte
   # order. The two happen to agree for short inputs and diverge once the
   # input exceeds ~64 bytes, so `ChNative.Block.decode/1`'s checksum check
-  # (which ch_driver cannot bypass or work around from here -- it's a
-  # correctness check, not something ch_driver should skip) passes for tiny
-  # blocks by coincidence and fails with `{:error, :checksum_mismatch}` for
-  # any real result set. LZ4 itself is unaffected: the payload decompresses
-  # to exactly the expected bytes even when the checksum comparison fails
-  # (see the diagnostic test below) -- this is purely a checksum-algorithm
-  # bug in ch_codec, verified with a standalone Rust probe against a real
-  # captured ClickHouse block (see `clickhouse_adapter_elixir-g8o`'s
-  # description for the byte-level proof and the one-line fix). Per this
-  # feature's scope, ch_codec's core NIF code is explicitly off-limits here,
-  # so this can't be fixed from ch_driver -- these tests are `@tag :skip`
-  # until g8o lands, rather than deleted or left silently missing.
-  @cityhash_bug "clickhouse_adapter_elixir-g8o"
+  # passed for tiny blocks by coincidence and failed with
+  # `{:error, :checksum_mismatch}` for any real result set. Fixed by switching
+  # the NIF to call `cityhash_rs::cityhash_102_128` instead; the two
+  # previously-skipped tests below are unskipped now that g8o has landed.
 
   describe "compression: :lz4 against a live ClickHouse server" do
     setup do
@@ -47,7 +37,6 @@ defmodule ChDriver.CompressionTest do
       assert rows == [[1]]
     end
 
-    @tag skip: "blocked on #{@cityhash_bug} -- see moduledoc-adjacent comment above"
     test "a large, highly-compressible result set round-trips completely and correctly", %{
       conn: conn
     } do
@@ -103,7 +92,6 @@ defmodule ChDriver.CompressionTest do
       assert rows == [[1, "alice"], [2, "bob"], [3, "carol"]]
     end
 
-    @tag skip: "blocked on #{@cityhash_bug} -- see moduledoc-adjacent comment above"
     test "per-query :compression opt can override the connection's own default" do
       {:ok, conn} = Connection.connect(compression: :none)
       on_exit(fn -> Connection.close(conn.socket) end)
@@ -153,16 +141,16 @@ defmodule ChDriver.CompressionTest do
     end
   end
 
-  describe "diagnostic evidence for the ch_codec cityhash bug (clickhouse_adapter_elixir-g8o)" do
-    test "LZ4 decompresses a real compressed block correctly even though its checksum doesn't verify" do
+  describe "regression coverage for the ch_codec cityhash bug (clickhouse_adapter_elixir-g8o)" do
+    test "a real compressed block's checksum verifies correctly, and LZ4 decompresses it" do
       # Captures one real compressed Data block (100 rows, well past the
-      # ~64-byte coincidence threshold) from a live server, then shows the
-      # split responsibility: LZ4 decompression recovers the exact expected
-      # plaintext bytes (proving compression/decompression themselves are
-      # fine), while `ChNative.Block.decode/1`'s checksum check -- computed
-      # with the wrong CityHash version in ch_codec -- rejects it anyway.
-      # This isolates the bug to the checksum, not to anything wired up in
-      # ch_driver.
+      # ~64-byte coincidence threshold below which CityHash v1.0.2 and v1.0.3
+      # happen to agree) from a live server. Before the g8o fix,
+      # `ChCodec.cityhash128/1` called CityHash v1.0.3 instead of the v1.0.2
+      # ClickHouse itself uses for wire checksums, so the checksum comparison
+      # here failed for any block this size even though LZ4 decompression
+      # itself was always fine. This is a regression test for that fix: both
+      # the checksum must now verify AND LZ4 must decompress correctly.
       assert {:ok, conn} = Connection.connect(compression: :lz4)
       on_exit(fn -> Connection.close(conn.socket) end)
 
@@ -197,11 +185,11 @@ defmodule ChDriver.CompressionTest do
       assert method == 0x82
 
       # The checksum comparison ChNative.Block.decode/1 performs internally
-      # -- reproduced here directly against ChCodec to show it fails on this
-      # real (non-tiny) block.
+      # -- reproduced here directly against ChCodec to confirm it now matches
+      # on this real (non-tiny) block.
       envelope_header = <<method::8, compressed_size::little-32, uncompressed_size::little-32>>
       computed_checksum = ChCodec.cityhash128([envelope_header, payload])
-      assert computed_checksum != checksum, "checksum bug appears to be fixed -- update this test"
+      assert computed_checksum == checksum
 
       # LZ4 decompression itself, however, is completely unaffected: it
       # recovers exactly `uncompressed_size` bytes of plausible-looking
