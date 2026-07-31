@@ -24,22 +24,13 @@ instance and is known to work as written.
 ### Prerequisites: getting ClickHouse running
 
 This notebook needs a real ClickHouse server on `localhost:9000` (the
-native protocol port). The easiest way is the `docker-compose.yml` already
-in this repo's `clickhouse_adapter_ecto/` directory:
-
-```shell
-cd clickhouse_adapter_ecto
-docker compose up -d
-```
-
-Wait for the `clickhouse` service to report healthy (`docker compose ps`),
-then come back here. If you'd rather not use this repo's compose file, the
-minimal equivalent is:
+native protocol port). Any recent ClickHouse server will do; a
+minimal Docker Compose setup looks like:
 
 ```yaml
 services:
   clickhouse:
-    image: clickhouse/clickhouse-server:24.8
+    image: clickhouse/clickhouse-server:26.7
     ports:
       - "9000:9000" # native TCP protocol
       - "8123:8123" # HTTP, handy for cross-checking with curl/ch
@@ -49,40 +40,32 @@ services:
       CLICKHOUSE_PASSWORD: ""
 ```
 
+Save that as `docker-compose.yml` and run `docker compose up -d`, then
+wait for the `clickhouse` service to report healthy (`docker compose ps`)
+before continuing. (If you've cloned the
+[clickhouse_adapter_elixir](https://github.com/mfeckie/clickhouse_adapter_elixir)
+repo, its `clickhouse_adapter_ecto/docker-compose.yml` already has this,
+plus a Kafka broker used by that repo's own test suite -- not needed here.)
+
 This notebook creates its own tables (all prefixed `livemd_`) and drops
 them again at the end, so it's safe to run against a ClickHouse instance
 you're also using for other things.
 
 ## Installing dependencies
 
-Neither `clickhouse_adapter_ecto` nor `ch_driver` are published to Hex
-yet, so this notebook installs them as local path dependencies, relative to
-this file's location (`examples/getting_started.livemd`) in the repo:
-
-```
-clickhouse_adapter_elixir/
-├── clickhouse_adapter_ecto/   <- Ecto.Adapters.ClickHouse (app: :clickhouse_adapter_ecto)
-├── ch_driver/                 <- native-protocol DBConnection driver, including its
-│                                 LZ4/CityHash compression NIF and compressed-block
-│                                 wire envelope (app: :ch_driver)
-└── examples/
-    └── getting_started.livemd   <- you are here
-```
+Both packages are on Hex, so this notebook is fully standalone -- no
+need to clone anything:
 
 ```elixir
 Mix.install([
-  {:clickhouse_adapter_ecto, path: "../clickhouse_adapter_ecto"},
-  {:ch_driver, path: "../ch_driver"}
+  {:clickhouse_adapter_ecto, "~> 0.1.0"}
 ])
-
-# Once these are published to Hex (see the separate Hex-publishing-readiness
-# issue), swap the cell above for version-pinned Hex deps instead -- e.g.:
-#
-# Mix.install([
-#   {:clickhouse_adapter_ecto, "~> 0.1"},
-#   {:ch_driver, "~> 0.1"}
-# ])
 ```
+
+`ch_driver` (the native-protocol `DBConnection` driver this adapter is
+built on, including its LZ4/CityHash compression NIF) isn't listed
+explicitly -- it resolves transitively as a Hex dependency of
+`clickhouse_adapter_ecto`.
 
 ## Connecting a Repo
 
@@ -426,12 +409,15 @@ end
 
 ## Where to go next
 
-This notebook only scratches the surface. For anything not covered here:
+This notebook only scratches the surface. For anything not covered here,
+the moduledocs are on [hexdocs.pm](https://hexdocs.pm/clickhouse_adapter_ecto)
+and also reachable from a running notebook cell with `h ModuleName`:
 
-* **`clickhouse_adapter_ecto/README.md`** -- what's supported end to end (SELECT/INSERT,
-  migrations, storage), installation, and the full write-up on why
-  `Ecto.Adapters.SQL.Sandbox` doesn't work with this adapter and what to
-  use instead for test isolation (`Ecto.Adapters.ClickHouse.TestCase`).
+* **the `clickhouse_adapter_ecto` package README** -- what's supported end to
+  end (SELECT/INSERT, migrations, storage), installation, and the full
+  write-up on why `Ecto.Adapters.SQL.Sandbox` doesn't work with this adapter
+  and what to use instead for test isolation
+  (`Ecto.Adapters.ClickHouse.TestCase`).
 * **`Ecto.Adapters.ClickHouse.DDL`'s moduledoc** -- exactly which DDL
   operations are safe to auto-reverse via `change/0` versus which need
   explicit `up/0`/`down/0` (data-skipping indices, `MODIFY ORDER BY`,
@@ -443,6 +429,6 @@ This notebook only scratches the surface. For anything not covered here:
 * **`Ecto.Adapters.ClickHouse.Connection`'s moduledoc** (`stream/4` in
   particular) -- the full account of the `Repo.stream/2` transaction
   limitation touched on above.
-* **`ch_driver/lib/ch_driver.ex`'s moduledoc** -- the driver's public
-  surface (`start_link/1`, `query/2,3,4`, `stream/2,3,4`) if you want to
-  use it directly, independent of Ecto.
+* **`ChDriver`'s moduledoc** -- the driver's public surface
+  (`start_link/1`, `query/2,3,4`, `stream/2,3,4`) if you want to use it
+  directly, independent of Ecto.
