@@ -44,14 +44,39 @@ defmodule ChDriver.Connection do
       before the handshake fails fast with `{:error, %ChDriver.Error{}}`
       rather than growing the buffer unbounded, defaults to `#{@default_max_buffer_size}`
       (64MB, matching Postgrex's `@max_packet`)
+    * `:compression` - `:none` (default) or `:lz4`. Opt-in wire compression
+      for `query/3`'s outbound/inbound Data blocks -- off by default so
+      existing callers see byte-for-byte unchanged behavior. This is a
+      per-connection default; `query/3`'s own `opts` can override it per
+      call. See `ChDriver.Protocol.Messages.encode_query/2`'s moduledoc for
+      exactly how this is negotiated with the server and why both
+      directions of block traffic are affected. The only unsupported value
+      besides these two raises `ArgumentError` rather than silently falling
+      back to uncompressed.
 
-  Returns `{:ok, %{socket: socket, server_info: %ChDriver.Protocol.ServerHello{}}}`
+      KNOWN LIMITATION (tracked as `clickhouse_adapter_elixir-g8o`): decoding
+      a real (larger than ~64-byte) compressed Data block currently fails
+      with `{:error, :checksum_mismatch}` because `ch_codec`'s `cityhash128/1`
+      NIF computes CityHash v1.0.3 instead of the v1.0.2 variant ClickHouse
+      actually uses on the wire -- a bug in a dependency, not in this
+      negotiation logic (verified: LZ4 compress/decompress themselves are
+      unaffected). Tiny results (e.g. `SELECT 1`) happen to round-trip
+      anyway, since the two CityHash versions agree below that size. Do not
+      enable `:compression` for anything beyond trivial result sets until
+      g8o is fixed.
+
+  Returns `{:ok, %{socket: socket, server_info: %ChDriver.Protocol.ServerHello{}, compression: :none | :lz4}}`
   on success, or `{:error, reason}` on failure. The caller owns the
   returned socket and is responsible for closing it (see
   `ChDriver.Connection.close/1`).
   """
   @spec connect(keyword) ::
-          {:ok, %{socket: :gen_tcp.socket(), server_info: Protocol.ServerHello.t()}}
+          {:ok,
+           %{
+             socket: :gen_tcp.socket(),
+             server_info: Protocol.ServerHello.t(),
+             compression: ChNative.Block.method()
+           }}
           | {:error, term}
   def connect(opts \\ []) do
     hostname = opts |> Keyword.get(:hostname, "localhost") |> to_charlist()
@@ -62,16 +87,24 @@ defmodule ChDriver.Connection do
     connect_timeout = Keyword.get(opts, :connect_timeout, @default_connect_timeout)
     recv_timeout = Keyword.get(opts, :recv_timeout, @default_recv_timeout)
     max_buffer_size = Keyword.get(opts, :max_buffer_size, @default_max_buffer_size)
+    compression = validate_compression!(Keyword.get(opts, :compression, :none))
 
     tcp_opts = [:binary, packet: :raw, active: false]
 
     case :gen_tcp.connect(hostname, port, tcp_opts, connect_timeout) do
       {:ok, socket} ->
-        do_handshake(socket, database, username, password, recv_timeout, max_buffer_size)
+        do_handshake(socket, database, username, password, recv_timeout, max_buffer_size, compression)
 
       {:error, reason} ->
         {:error, reason}
     end
+  end
+
+  defp validate_compression!(compression) when compression in [:none, :lz4], do: compression
+
+  defp validate_compression!(other) do
+    raise ArgumentError,
+          "invalid :compression option #{inspect(other)} -- must be :none or :lz4"
   end
 
   # Performs the Hello/Addendum handshake on an already-open socket. If any
@@ -80,14 +113,14 @@ defmodule ChDriver.Connection do
   # success), so nothing else would ever close it otherwise, leaking an open
   # :gen_tcp socket on every partial-handshake failure (bad credentials,
   # unexpected/garbled ServerHello, a mid-handshake network drop, etc).
-  defp do_handshake(socket, database, username, password, recv_timeout, max_buffer_size) do
+  defp do_handshake(socket, database, username, password, recv_timeout, max_buffer_size, compression) do
     hello = Protocol.client_hello(database, username, password)
 
     with :ok <- :gen_tcp.send(socket, Protocol.encode_client_hello(hello)),
          {:ok, server_info} <-
            receive_server_hello(socket, <<>>, recv_timeout, max_buffer_size),
          :ok <- send_addendum_if_required(socket) do
-      {:ok, %{socket: socket, server_info: server_info}}
+      {:ok, %{socket: socket, server_info: server_info, compression: compression}}
     else
       {:error, reason} ->
         :gen_tcp.close(socket)
@@ -152,22 +185,35 @@ defmodule ChDriver.Connection do
     * `EndOfStream` ends the loop successfully.
     * `Exception` ends the loop with `{:error, %ChDriver.Error{}}`.
 
+  `opts[:compression]` (`:none` or `:lz4`) overrides the connection's
+  default (the `:compression` passed to `connect/1`, `:none` if that
+  wasn't given either) for this one query -- see `connect/1`'s docs and
+  `ChDriver.Protocol.Messages.encode_query/2`'s moduledoc for what this
+  negotiates with the server.
+
   Returns `{:ok, %{columns: [{name, type}], rows: [[term]]}}` or
   `{:error, term}` (either a socket error or a `%ChDriver.Error{}`).
   """
   @spec query(map, binary, keyword) :: {:ok, map} | {:error, term}
-  def query(%{socket: socket}, query_string, opts \\ []) do
+  def query(%{socket: socket} = conn, query_string, opts \\ []) do
     recv_timeout = Keyword.get(opts, :recv_timeout, @default_recv_timeout)
     max_buffer_size = Keyword.get(opts, :max_buffer_size, @default_max_buffer_size)
+    compression = Keyword.get(opts, :compression, Map.get(conn, :compression, :none))
 
     packet = [
-      Protocol.encode_query(query_string, opts),
-      Protocol.encode_empty_data_packet()
+      Protocol.encode_query(query_string, Keyword.put(opts, :compression, compression)),
+      Protocol.encode_empty_data_packet(compression)
     ]
 
     with :ok <- :gen_tcp.send(socket, packet) do
       socket
-      |> receive_query_result(<<>>, recv_timeout, %{columns: nil, rows: []}, max_buffer_size)
+      |> receive_query_result(
+        <<>>,
+        recv_timeout,
+        %{columns: nil, rows: []},
+        max_buffer_size,
+        compression
+      )
       |> put_statement(query_string)
     end
   end
@@ -182,23 +228,23 @@ defmodule ChDriver.Connection do
 
   defp put_statement(result, _query_string), do: result
 
-  defp receive_query_result(socket, buffer, timeout, acc, max_buffer_size) do
-    case Protocol.decode_packet(buffer) do
+  defp receive_query_result(socket, buffer, timeout, acc, max_buffer_size, compression) do
+    case Protocol.decode_packet(buffer, compression) do
       {:ok, {:data, %{columns: columns, rows: rows}}, rest} ->
         acc = accumulate_data(acc, columns, rows)
-        receive_query_result(socket, rest, timeout, acc, max_buffer_size)
+        receive_query_result(socket, rest, timeout, acc, max_buffer_size, compression)
 
       {:ok, {:profile_events, _block}, rest} ->
-        receive_query_result(socket, rest, timeout, acc, max_buffer_size)
+        receive_query_result(socket, rest, timeout, acc, max_buffer_size, compression)
 
       {:ok, {:progress, _progress}, rest} ->
-        receive_query_result(socket, rest, timeout, acc, max_buffer_size)
+        receive_query_result(socket, rest, timeout, acc, max_buffer_size, compression)
 
       {:ok, {:profile_info, _profile_info}, rest} ->
-        receive_query_result(socket, rest, timeout, acc, max_buffer_size)
+        receive_query_result(socket, rest, timeout, acc, max_buffer_size, compression)
 
       {:ok, :pong, rest} ->
-        receive_query_result(socket, rest, timeout, acc, max_buffer_size)
+        receive_query_result(socket, rest, timeout, acc, max_buffer_size, compression)
 
       {:ok, :end_of_stream, _rest} ->
         {:ok, %{columns: acc.columns || [], rows: Enum.reverse(acc.rows)}}
@@ -209,7 +255,7 @@ defmodule ChDriver.Connection do
       {:incomplete, _} ->
         with :ok <- check_buffer_size(buffer, max_buffer_size),
              {:ok, more} <- :gen_tcp.recv(socket, 0, timeout) do
-          receive_query_result(socket, buffer <> more, timeout, acc, max_buffer_size)
+          receive_query_result(socket, buffer <> more, timeout, acc, max_buffer_size, compression)
         end
 
       {:error, reason} ->

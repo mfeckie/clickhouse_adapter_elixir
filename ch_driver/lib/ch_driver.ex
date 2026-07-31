@@ -17,9 +17,16 @@ defmodule ChDriver do
 
   All `ChDriver.Connection.connect/1` options (`:hostname`, `:port`,
   `:database`, `:username`, `:password`, `:connect_timeout`,
-  `:recv_timeout`) are accepted by `start_link/1` and forwarded to each
-  pooled connection; standard `DBConnection.start_link/2` pool options
-  (`:pool_size`, `:name`, etc.) are also accepted.
+  `:recv_timeout`, `:compression`) are accepted by `start_link/1` and
+  forwarded to each pooled connection; standard `DBConnection.start_link/2`
+  pool options (`:pool_size`, `:name`, etc.) are also accepted.
+
+  `:compression` (`:none` (default) or `:lz4`) is opt-in wire compression
+  for Data blocks -- off by default, so existing callers see unchanged
+  behavior. It can also be overridden per call via `query/4`'s `opts`. See
+  `ChDriver.Connection.connect/1` and
+  `ChDriver.Protocol.Messages.encode_query/2` for how it's negotiated with
+  the server.
   """
 
   alias ChDriver.Query

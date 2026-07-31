@@ -144,13 +144,14 @@ defmodule ChDriver.Protocol do
   @doc """
   Encodes an empty Data packet (Client packet type 2): an empty external
   table, sent right after a Query packet to signal "no external tables /
-  no input data" (required even for plain SELECTs). See
-  `ChDriver.Protocol.Messages.encode_empty_data_packet/0` for the wire
-  layout.
+  no input data" (required even for plain SELECTs). `compression` must
+  match whatever was passed as `encode_query/2`'s `:compression` opt for
+  this query. See `ChDriver.Protocol.Messages.encode_empty_data_packet/1`
+  for the wire layout.
   """
-  @spec encode_empty_data_packet() :: iodata
-  def encode_empty_data_packet do
-    Messages.encode_empty_data_packet()
+  @spec encode_empty_data_packet(ChNative.Block.method()) :: iodata
+  def encode_empty_data_packet(compression \\ :none) do
+    Messages.encode_empty_data_packet(compression)
   end
 
   @doc """
@@ -181,15 +182,35 @@ defmodule ChDriver.Protocol do
 
   Packet type discriminants are documented in the module-level comments
   above; per-type field layouts live in `ChDriver.Protocol.Messages`.
+
+  `compression` (`:none` (default) or `:lz4`) must match whatever was
+  negotiated for this query via `encode_query/2`'s `:compression` opt --
+  it only affects how Data packets' block bodies are decoded (routed
+  through `ChNative.Block.decode/1` first when `:lz4`).
+
+  ProfileEvents (type 14) is deliberately excluded from that: verified
+  live against ClickHouse 24.8 with compression negotiated on, the server
+  sends ProfileEvents blocks in plain, un-enveloped Native format
+  regardless of the negotiated compression setting -- unlike Data, it's
+  written via its own dedicated `NativeWriter` straight to the raw output
+  stream rather than through the query's `maybe_compressed_out`. Forcing
+  `:lz4` decoding onto it (as this driver's first cut at compression did)
+  desyncs the stream right after the first ProfileEvents packet, since
+  ChNative.Block.decode/1 then waits forever for a compression envelope
+  header that was never written. So ProfileEvents is always decoded as
+  `:none`, independent of `compression`; every other packet type (Progress,
+  ProfileInfo, Exception, EndOfStream, Pong) was already plain regardless.
   """
-  @spec decode_packet(binary) :: {:ok, term, binary} | {:incomplete, binary} | {:error, term}
-  def decode_packet(binary) when is_binary(binary) do
+  @spec decode_packet(binary, ChNative.Block.method()) ::
+          {:ok, term, binary} | {:incomplete, binary} | {:error, term}
+  def decode_packet(binary, compression \\ :none) when is_binary(binary) do
     case Varint.decode(binary) do
       {:incomplete, _} ->
         {:incomplete, binary}
 
       {:ok, @server_data, rest} ->
-        with {:ok, block, rest} <- ChDriver.Protocol.NativeBlock.decode_data_packet(rest) do
+        with {:ok, block, rest} <-
+               ChDriver.Protocol.NativeBlock.decode_data_packet(rest, compression) do
           {:ok, {:data, block}, rest}
         else
           {:incomplete, _} -> {:incomplete, binary}
@@ -197,7 +218,8 @@ defmodule ChDriver.Protocol do
         end
 
       {:ok, @server_profile_events, rest} ->
-        with {:ok, block, rest} <- ChDriver.Protocol.NativeBlock.decode_data_packet(rest) do
+        with {:ok, block, rest} <-
+               ChDriver.Protocol.NativeBlock.decode_data_packet(rest, :none) do
           {:ok, {:profile_events, block}, rest}
         else
           {:incomplete, _} -> {:incomplete, binary}

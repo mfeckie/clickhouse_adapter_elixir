@@ -45,7 +45,13 @@ defmodule ChDriver.DBConnection do
   def connect(opts) do
     case Connection.connect(opts) do
       {:ok, conn} ->
-        {:ok, %{socket: conn.socket, server_info: conn.server_info, opts: opts}}
+        {:ok,
+         %{
+           socket: conn.socket,
+           server_info: conn.server_info,
+           compression: conn.compression,
+           opts: opts
+         }}
 
       {:error, reason} ->
         {:error, connection_error("failed to connect to ClickHouse", reason)}

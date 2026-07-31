@@ -1,10 +1,16 @@
 defmodule ChDriver.Protocol.NativeBlock do
   @moduledoc """
   Decodes ClickHouse's plaintext "Native" block format -- the payload of a
-  Data (or wire-identical ProfileEvents) packet once compression is
-  disabled (this driver always negotiates `compression: 0` in
-  `ChDriver.Protocol.encode_query/2`, so blocks are never wrapped in
-  `ChNative.Block`'s compressed envelope).
+  Data (or wire-identical ProfileEvents) packet once any compression
+  envelope has been stripped away.
+
+  Compression is opt-in and defaults to off (`ChDriver.Protocol.encode_query/2`'s
+  `:compression` opt, `:none` by default). When it's off, blocks arrive
+  exactly as described below. When a query negotiates `:lz4` compression,
+  `decode_data_packet/2` routes the block body through
+  `ChNative.Block.decode/1` first and hands this module the decompressed
+  bytes -- the format below is unchanged either way, since compression is
+  just an envelope around the same plain Native block bytes.
 
   Format (matches `Formats/NativeReader.cpp`, protocol revision 54469):
 
@@ -72,17 +78,56 @@ defmodule ChDriver.Protocol.NativeBlock do
   packet-type varint): the external table name string, followed by a
   Native block.
 
+  The external table name is always plain, regardless of `compression`.
+  When `compression` is `:none` (the default), the block that follows is
+  decoded as plain bytes, exactly as before. When `compression` is
+  `:lz4`, the bytes following the external table name are first routed
+  through `ChNative.Block.decode/1` -- a single compressed envelope wraps
+  exactly one block's worth of bytes (BlockInfo + columns + rows), so the
+  decompressed payload is handed to `decode_block/1` as-is, and whatever
+  `ChNative.Block.decode/1` reports as unconsumed trailing bytes (`rest`)
+  is returned as this packet's `rest` -- it is the start of the *next*
+  packet (a fresh packet-type varint), not necessarily another compressed
+  envelope, since only block bodies are ever wrapped.
+
   Returns `{:ok, %{table_name:, columns:, rows:}, rest}`,
   `{:incomplete, binary}`, or `{:error, reason}`.
   """
-  @spec decode_data_packet(binary) :: {:ok, map, binary} | {:incomplete, binary} | {:error, term}
-  def decode_data_packet(binary) do
+  @spec decode_data_packet(binary, ChNative.Block.method()) ::
+          {:ok, map, binary} | {:incomplete, binary} | {:error, term}
+  def decode_data_packet(binary, compression \\ :none) do
     with {:ok, table_name, rest} <- Varint.decode_string(binary),
-         {:ok, block, rest} <- decode_block(rest) do
+         {:ok, block, rest} <- decode_block_body(rest, compression) do
       {:ok, Map.put(block, :table_name, table_name), rest}
     else
       {:incomplete, _} -> {:incomplete, binary}
       {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp decode_block_body(binary, :none), do: decode_block(binary)
+
+  defp decode_block_body(binary, :lz4) do
+    case ChNative.Block.decode(binary) do
+      {:ok, decompressed, rest} ->
+        with {:ok, block, <<>>} <- decode_block(decompressed) do
+          {:ok, block, rest}
+        else
+          {:ok, _block, _extra} ->
+            {:error, {:trailing_bytes_after_compressed_block, decompressed}}
+
+          {:incomplete, _} ->
+            {:error, {:short_compressed_block, decompressed}}
+
+          {:error, reason} ->
+            {:error, reason}
+        end
+
+      {:incomplete, _missing_byte_count} ->
+        {:incomplete, binary}
+
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 

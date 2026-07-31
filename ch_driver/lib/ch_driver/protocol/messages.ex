@@ -165,6 +165,7 @@ defmodule ChDriver.Protocol.Messages do
 
   @query_stage_complete 2
   @compression_disabled 0
+  @compression_enabled 1
 
   # The "custom setting" flag bit (Core/BaseSettingsFwdDeclsGen.h /
   # SettingsWriteFormat) marking a settings-changes entry as a named
@@ -190,10 +191,7 @@ defmodule ChDriver.Protocol.Messages do
       interserver secret (string "" -- gated on
         DBMS_MIN_REVISION_WITH_INTERSERVER_SECRET, always satisfied here)
       query processing stage (varint, 2 = Complete)
-      compression (varint, 0 = disabled -- this driver always disables
-        compression; Data blocks are then sent/received as plain,
-        un-enveloped Native blocks rather than wrapped in
-        `ChNative.Block`)
+      compression (varint, 0 = disabled, 1 = enabled -- see below)
       query string
       query parameters (see `encode_query_parameters/1` -- gated on
         DBMS_MIN_PROTOCOL_VERSION_WITH_PARAMETERS, always satisfied here)
@@ -207,11 +205,30 @@ defmodule ChDriver.Protocol.Messages do
       `raw_text` and `ChDriver.Params.escape_rounds/1` for the matching
       escape depth -- a bare 2-tuple defaults to the scalar depth of 2).
       Defaults to `[]`.
+    * `:compression` -- `:none` (default) or `:lz4`. This is *not* a codec
+      choice for this one field alone: per `TCPHandler::receiveQuery` /
+      `TCPHandler::run` in ClickHouse's own source (reverse-engineered
+      empirically against a live 24.8 server -- see
+      `ChDriver.Connection`'s moduledoc-adjacent comments for how), setting
+      this varint to 1 (Enable) tells the server that *both directions* of
+      this query's block traffic are compressed from here on: the server
+      wraps every Data/ProfileEvents block it sends back in a
+      `ChNative.Block` compressed envelope, and it expects the client's own
+      Data packets (e.g. the empty external-table block sent by
+      `encode_empty_data_packet/1`) to arrive wrapped the same way --
+      sending a plain block after declaring compression enabled leaves the
+      server blocked forever trying to read a compression envelope header
+      out of un-enveloped bytes. The envelope's method byte is chosen by
+      whichever side is doing the sending independently (LZ4 for both
+      client->server and server->client in this driver); Hello/Addendum and
+      non-block packets (Progress, ProfileInfo, Exception, EndOfStream) are
+      never wrapped, compression enabled or not.
   """
   @spec encode_query(binary, keyword) :: iodata
   def encode_query(query_string, opts \\ []) do
     query_id = Keyword.get(opts, :query_id, "")
     params = Keyword.get(opts, :params, [])
+    compression_flag = compression_flag(Keyword.get(opts, :compression, :none))
 
     [
       Varint.encode(@client_query),
@@ -220,11 +237,14 @@ defmodule ChDriver.Protocol.Messages do
       Varint.encode_string(""),
       Varint.encode_string(""),
       Varint.encode(@query_stage_complete),
-      Varint.encode(@compression_disabled),
+      Varint.encode(compression_flag),
       Varint.encode_string(query_string),
       encode_query_parameters(params)
     ]
   end
+
+  defp compression_flag(:none), do: @compression_disabled
+  defp compression_flag(:lz4), do: @compression_enabled
 
   # Each parameter is a (name, flags, value) triple identical in shape to
   # a per-query settings entry, terminated by an empty name -- see
@@ -295,21 +315,34 @@ defmodule ChDriver.Protocol.Messages do
   @doc """
   Encodes an empty Data packet (Client packet type 2): an empty external
   table, sent right after a Query packet to signal "no external tables /
-  no input data" (required even for plain SELECTs). The block itself is
-  sent as a plain (uncompressed) Native block -- BlockInfo with
-  is_overflows=0/bucket_num=-1, zero columns, zero rows -- since this
-  driver always negotiates compression=0 in `encode_query/2`.
+  no input data" (required even for plain SELECTs).
+
+  The external-table name string is always sent plain -- only the block
+  body (BlockInfo with is_overflows=0/bucket_num=-1, zero columns, zero
+  rows) is ever wrapped. `compression` (`:none` (default) or `:lz4`) must
+  match whatever was negotiated for this query via `encode_query/2`'s
+  `:compression` opt -- when `:lz4`, the block body is routed through
+  `ChNative.Block.encode/2` before being sent, since the server (having
+  been told compression is enabled in the preceding Query packet) expects
+  this block wrapped in a compressed envelope, not sent plain.
   """
-  @spec encode_empty_data_packet() :: iodata
-  def encode_empty_data_packet do
-    [
-      Varint.encode(@client_data),
-      Varint.encode_string(""),
+  @spec encode_empty_data_packet(ChNative.Block.method()) :: iodata
+  def encode_empty_data_packet(compression \\ :none) do
+    block_body = [
       empty_block_info(),
       Varint.encode(0),
       Varint.encode(0)
     ]
+
+    [
+      Varint.encode(@client_data),
+      Varint.encode_string(""),
+      encode_block_body(block_body, compression)
+    ]
   end
+
+  defp encode_block_body(block_body, :none), do: block_body
+  defp encode_block_body(block_body, :lz4), do: ChNative.Block.encode(block_body, :lz4)
 
   defp empty_block_info do
     is_overflows_field = 1
