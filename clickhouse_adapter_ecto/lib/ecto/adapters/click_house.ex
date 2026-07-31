@@ -29,7 +29,7 @@ defmodule Ecto.Adapters.ClickHouse do
   migrations to run: `supports_ddl_transaction?/0` returns `false`
   (ClickHouse has no transactional DDL), and `lock_for_migrations/3` is a
   **deliberate no-op** that just calls the given function directly -- see
-  its doc below for why. `Ecto.Adapters.ClickHouse.Connection.execute_ddl/1`
+  its doc below for why. `Ecto.Adapters.ClickHouse.Connection`'s `execute_ddl/1`
   turns `create table(...)`/`drop table(...)` into `CREATE TABLE`/`DROP
   TABLE` (see that module's `## DDL` section for exactly what's supported
   and how the `ENGINE`/`ORDER BY` clause is chosen), which is what lets
@@ -39,9 +39,9 @@ defmodule Ecto.Adapters.ClickHouse do
   supported for the common case: a `change/0` migration doing
   `create table(...)` auto-reverses to `drop table(...)` cleanly (both are
   synchronous, metadata-only DDL), and the `schema_migrations` bookkeeping
-  row removal that `Ecto.Migration.SchemaMigration.down/4` issues via
+  row removal that `Ecto.Migration.SchemaMigration`'s `down/4` issues via
   `Repo.delete_all/2` is handled by
-  `Ecto.Adapters.ClickHouse.Connection.delete_all/1`, which translates it
+  `Ecto.Adapters.ClickHouse.Connection`'s `delete_all/1`, which translates it
   into an `ALTER TABLE ... DELETE WHERE ... SETTINGS mutations_sync = 1`
   mutation that blocks until the row is actually gone, so the migrator's
   post-delete state is correct with no polling. See

@@ -4,7 +4,7 @@ defmodule Ecto.Adapters.ClickHouse.Migration do
   have no direct `Ecto.Migration.add/3` equivalent.
 
   `Ecto.Migration.add/3` validates its `type` argument itself, before this
-  adapter's `Ecto.Adapters.ClickHouse.Connection.execute_ddl/1` ever sees
+  adapter's `Ecto.Adapters.ClickHouse.Connection`'s `execute_ddl/1` ever sees
   it, and that validation unconditionally rejects any module implementing
   `Ecto.Type`/`Ecto.ParameterizedType`: passing
   `Ecto.Adapters.ClickHouse.Types.FixedString` directly as a migration
@@ -25,7 +25,7 @@ defmodule Ecto.Adapters.ClickHouse.Migration do
       add(:status, ClickHouse.Migration.low_cardinality(:string))
 
   Both still produce exactly the same quoted-atom value the escape hatch
-  always accepted (see `Ecto.Adapters.ClickHouse.DDL.column_type!/1`)
+  always accepted (see `Ecto.Adapters.ClickHouse.DDL`'s `column_type!/1`)
   -- there's no other legal way to hand `add/3` a ClickHouse-specific type
   string -- but the parameter is checked here instead of only surfacing as
   a cryptic ClickHouse DDL error at migration time.
@@ -80,7 +80,7 @@ defmodule Ecto.Adapters.ClickHouse.Migration do
   @doc """
   Builds the quoted-atom migration type for `LowCardinality(inner_type)`,
   where `inner_type` is any Ecto type
-  `Ecto.Adapters.ClickHouse.DDL.column_type!/1` already knows how to
+  `Ecto.Adapters.ClickHouse.DDL`'s `column_type!/1` already knows how to
   map to a ClickHouse column type (e.g. `:string`, `:integer`, `:uuid`,
   `{:array, :string}`).
 

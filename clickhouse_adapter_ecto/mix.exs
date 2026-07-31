@@ -47,6 +47,7 @@ defmodule ClickhouseAdapterEcto.MixProject do
     [
       {:ecto, "~> 3.0"},
       {:ecto_sql, "~> 3.0"},
+      {:ex_doc, ">= 0.0.0", only: :dev, runtime: false},
       # An optional dependency declared only by ch_driver (its own NIF's
       # force-build fallback) isn't fetched/compiled as part of *this*
       # umbrella build unless something in this project's own deps list

@@ -14,8 +14,8 @@ defmodule Ecto.Adapters.ClickHouse.Connection do
   mechanism (see `ChDriver.Protocol.encode_query/2`) -- the value's bytes
   never pass through the SQL text at all, so there's nothing to escape and
   no `?` inside a string literal or raw fragment can be mistaken for a
-  bind placeholder (the one-time lexer this drives, `ChDriver.Query.
-  lex_placeholders/1`, tracks quoted regions while scanning).
+  bind placeholder (the one-time lexer this drives, `ChDriver.Query`'s
+  `lex_placeholders/1`, tracks quoted regions while scanning).
 
   ClickHouse's parameter mechanism has no type-independent way to express
   NULL (see `ChDriver.Params.text/1`), so a `nil` value is the one
@@ -102,21 +102,22 @@ defmodule Ecto.Adapters.ClickHouse.Connection do
   `ChDriver.DBConnection`'s "Cursors" section, for exactly how this stays
   genuinely incremental -- one ClickHouse wire-protocol Data block at a
   time -- rather than buffering the whole result first) for `statement`,
-  mirroring every other `Ecto.Adapters.SQL.Connection.stream/4`
+  mirroring every other `Ecto.Adapters.SQL.Connection`'s `stream/4`
   implementation (e.g. `Postgrex.Connection.stream/4`, which just calls
   `Postgrex.stream/4`).
 
   `conn` here is always already a checked-out `%DBConnection{conn_mode:
-  :transaction}` by the time this is called -- `Ecto.Adapters.SQL.reduce/6`
-  (which backs `Repo.stream/2`) guards on exactly that mode before ever
-  reaching here (see `ecto_sql/lib/ecto/adapters/sql.ex`), the same
-  requirement every SQL adapter's `Repo.stream/2` has (Postgres included).
+  :transaction}` by the time this is called -- `Ecto.Adapters.SQL`'s
+  `reduce/6` (which backs `Repo.stream/2`) guards on exactly that mode
+  before ever reaching here (see `ecto_sql/lib/ecto/adapters/sql.ex`), the
+  same requirement every SQL adapter's `Repo.stream/2` has (Postgres
+  included).
 
   KNOWN LIMITATION: unlike Postgres, `ChDriver.DBConnection` has no
   `handle_begin/2` (see its moduledoc -- ClickHouse's native protocol as
   used here has no session transaction support), so `Repo.transaction/2`
   itself cannot succeed on this adapter yet, which means `Repo.stream/2`
-  cannot be driven end-to-end through `Ecto.Repo.transaction/2` the
+  cannot be driven end-to-end through `Ecto.Repo`'s `transaction/2` the
   normal way. This function, and the underlying `ChDriver.Stream`
   machinery, are fully real and independently tested (`ch_driver/test/
   ch_driver/stream_test.exs`,

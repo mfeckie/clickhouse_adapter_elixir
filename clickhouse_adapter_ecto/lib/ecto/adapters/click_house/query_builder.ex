@@ -50,7 +50,7 @@ defmodule Ecto.Adapters.ClickHouse.QueryBuilder do
   ## `SETTINGS mutations_sync = 1` clause that makes the *issuing client*
   ## block until the mutation has actually been applied locally before the
   ## query returns. That's exactly
-  ## what's needed to make `Ecto.Migration.SchemaMigration.down/4`'s
+  ## what's needed to make `Ecto.Migration.SchemaMigration`'s `down/4`'s
   ## `repo.delete_all(from m in "schema_migrations", where: m.version == ^v)`
   ## behave synchronously enough for `Ecto.Migrator.run(repo, path, :down,
   ## ...)` to work: insert the row (`up`), delete it and immediately have it

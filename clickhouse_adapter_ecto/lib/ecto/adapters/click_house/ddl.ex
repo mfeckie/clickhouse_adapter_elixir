@@ -5,7 +5,7 @@ defmodule Ecto.Adapters.ClickHouse.DDL do
   Only `CREATE TABLE [IF NOT EXISTS]` (from `Ecto.Migration.Table` + a
   column list of plain `{:add, name, type, opts}` commands) and
   `DROP TABLE [IF EXISTS]` are implemented -- enough to let
-  `Ecto.Migration.SchemaMigration.ensure_schema_migrations_table!/3`
+  `Ecto.Migration.SchemaMigration`'s `ensure_schema_migrations_table!/3`
   (called internally by `Ecto.Migrator`) create the `schema_migrations`
   table, and for a migration author's own `create table(...)` /
   `drop table(...)` to work for simple, single-statement tables.
@@ -326,7 +326,7 @@ defmodule Ecto.Adapters.ClickHouse.DDL do
 
   The schema field is a plain `:string`, not `Ecto.UUID`: ClickHouse's
   `UUID` column round-trips through this adapter as the standard
-  hyphenated text form (see `ChDriver.Protocol.NativeBlock.decode_uuid/1`),
+  hyphenated text form (see `ChDriver.Protocol.NativeBlock`'s `decode_uuid/1`),
   while `Ecto.UUID`'s own `dump/1` produces a raw 16-byte binary meant for
   Postgres-style binary UUID storage -- sent as a query parameter here,
   ClickHouse rejects it with `Cannot parse uuid`. So `Ecto.UUID.generate/0`
