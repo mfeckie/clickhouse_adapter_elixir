@@ -13,8 +13,10 @@ This is a minimal, early-stage adapter. It currently targets basic
 `mix ecto.drop` and straightforward `mix ecto.migrate`/`mix ecto.rollback`
 migrations. In short:
 
-* `SELECT` -- no joins, `GROUP BY`/`HAVING`, `DISTINCT`, or window/set
-  operations yet.
+* `SELECT` -- `INNER`/`LEFT JOIN` (including association-based
+  `join: assoc(...)` queries) are supported; `:right`/`:full`/`:cross` and
+  ClickHouse-specific ASOF/semi/anti/lateral joins are not. No
+  `GROUP BY`/`HAVING`, `DISTINCT`, or window/set operations yet.
 * `INSERT` -- no `:on_conflict`/`:returning` (ClickHouse has no upsert or
   `RETURNING`).
 * `UPDATE`/`DELETE` via `Repo.update!/1`/`Repo.delete!/1` are not supported at
