@@ -40,6 +40,12 @@ defmodule ChDriver.Protocol.Messages do
   @min_revision_with_version_patch 54_401
 
   @doc """
+  This driver's advertised protocol revision (`@client_revision`).
+  """
+  @spec client_revision() :: non_neg_integer
+  def client_revision, do: @client_revision
+
+  @doc """
   Builds a `ClientHello` struct advertising this driver's identity, for the
   given `default_database`, `user`, and `password`.
   """

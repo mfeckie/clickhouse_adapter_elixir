@@ -34,16 +34,12 @@ defmodule ChDriver.Protocol do
   # and let callers ignore/inspect it as they see fit.
   @server_profile_events 14
 
-  # Revision this driver advertises to the server. Also duplicated in
-  # `ChDriver.Protocol.Messages`, which needs it for Hello/ClientInfo
-  # encoding; kept here too since `addendum_required?/0` gates on it.
-  @client_revision 54_465
-
   # DBMS_MIN_PROTOCOL_VERSION_WITH_ADDENDUM (Core/ProtocolDefines.h). Since
-  # our advertised @client_revision is always above this, the driver always
-  # sends the post-Hello Addendum. See `ChDriver.Protocol.Messages.encode_addendum/0`
-  # for the full explanation of what the Addendum is and why skipping it
-  # desyncs the connection.
+  # our advertised revision (`ChDriver.Protocol.Messages.client_revision/0`)
+  # is always above this, the driver always sends the post-Hello Addendum.
+  # See `ChDriver.Protocol.Messages.encode_addendum/0` for the full
+  # explanation of what the Addendum is and why skipping it desyncs the
+  # connection.
   @min_revision_with_addendum 54_458
 
   defmodule ClientHello do
@@ -106,11 +102,9 @@ defmodule ChDriver.Protocol do
   @doc """
   Whether this driver's advertised revision requires sending the
   post-ServerHello Addendum (see `ChDriver.Protocol.Messages.encode_addendum/0`).
-  Always `true` for `@client_revision`, but exposed so callers gate on the
-  same constant the module uses internally.
   """
   @spec addendum_required? :: boolean
-  def addendum_required?, do: @client_revision >= @min_revision_with_addendum
+  def addendum_required?, do: Messages.client_revision() >= @min_revision_with_addendum
 
   @doc """
   Encodes the Addendum sent immediately after receiving ServerHello, when
