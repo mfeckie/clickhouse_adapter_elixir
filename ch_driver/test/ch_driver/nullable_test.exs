@@ -1,10 +1,9 @@
 defmodule ChDriver.NullableTest do
   @moduledoc """
-  Live integration coverage for `Nullable(T)` column decoding
-  (clickhouse_adapter_elixir-8a2.17) against a real ClickHouse table --
-  complements the `CAST(...)`-based unit-ish coverage in `query_test.exs`
-  with an actual `CREATE TABLE` / `INSERT` / `SELECT` round-trip through
-  `ChDriver.query/2`, per the issue's acceptance criteria.
+  Live integration coverage for `Nullable(T)` column decoding against a
+  real ClickHouse table -- complements the `CAST(...)`-based unit-ish
+  coverage in `query_test.exs` with an actual `CREATE TABLE` / `INSERT` /
+  `SELECT` round-trip through `ChDriver.query/2`.
 
   Requires `docker compose up -d` (from `adapter/`) to have been run first.
   """

@@ -1,8 +1,7 @@
 defmodule Ecto.Adapters.ClickHouse.RepoIntegrationTest do
   @moduledoc """
   End-to-end integration test against a *live* ClickHouse instance (see
-  `adapter/docker-compose.yml`) -- this is the acceptance bar for
-  clickhouse_adapter_elixir-8a2.11: `Ecto.Repo.insert!/1` and
+  `adapter/docker-compose.yml`): `Ecto.Repo.insert!/1` and
   `Ecto.Repo.all/1` actually round-tripping data through
   `Ecto.Adapters.ClickHouse` (an `Ecto.Adapters.SQL`-based adapter over
   `Ecto.Adapters.ClickHouse.Connection`) against a real server, not just

@@ -1,13 +1,12 @@
 defmodule ChDriver.MapTest do
   @moduledoc """
-  Live integration coverage for `Map(K, V)` column decoding
-  (clickhouse_adapter_elixir-8a2.21) against a real ClickHouse table --
-  confirming empty and populated maps round-trip to plain Elixir maps (see
-  `ChDriver.Protocol.NativeBlock.decode_map/3`).
+  Live integration coverage for `Map(K, V)` column decoding against a real
+  ClickHouse table -- empty and populated maps round-trip to plain Elixir
+  maps (see `ChDriver.Protocol.NativeBlock.decode_map/3`).
 
-  Also confirms live that `Nullable(Map(...))` is rejected by ClickHouse
-  outright (same restriction previously found for `Nullable(Array(T))`), so
-  `Map(K, V)` has no `Nullable` variant to test here.
+  `Nullable(Map(...))` is rejected by ClickHouse outright (same
+  restriction as `Nullable(Array(T))`), so `Map(K, V)` has no `Nullable`
+  variant to test here.
 
   Requires `docker compose up -d` (from `adapter/`) to have been run first.
   """

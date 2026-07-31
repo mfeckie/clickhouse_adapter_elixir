@@ -5,8 +5,7 @@ defmodule ChDriver.Protocol do
 
   The Hello exchange (ClientHello sent, ServerHello received) happens in
   plaintext -- unlike Query/Data packets, it is never wrapped in a
-  `ChNative.Block` compressed envelope. Confirmed live against ClickHouse
-  24.8 on `:9000`.
+  `ChNative.Block` compressed envelope.
   """
 
   alias ChDriver.Protocol.Varint
@@ -14,10 +13,7 @@ defmodule ChDriver.Protocol do
 
   # Packet type discriminants (varint-encoded). Client and server each have
   # their own enum -- see ClickHouse's Protocol.h (Protocol::Client::Enum /
-  # Protocol::Server::Enum). Confirmed live against ClickHouse 24.8 (used
-  # protocol revision 54469) by capturing real `clickhouse-client` traffic
-  # through a local TCP proxy and cross-referencing ClickHouse's own source
-  # at tag v24.8.14.39-lts.
+  # Protocol::Server::Enum), protocol revision 54469.
   @packet_hello 0
 
   @client_query 1
@@ -41,7 +37,7 @@ defmodule ChDriver.Protocol do
   # the negotiated revision -- see DBMS_MIN_REVISION_WITH_* constants in
   # Core/ProtocolDefines.h. 54465 is well above all of them, so a real
   # server always sends the full ServerHello shape below when we advertise
-  # this revision. Verified live against ClickHouse 24.8.
+  # this revision.
   @client_revision 54_465
   @client_version_major 24
   @client_version_minor 8
@@ -56,13 +52,12 @@ defmodule ChDriver.Protocol do
   # our advertised @client_revision is always above this, the driver always
   # sends the post-Hello Addendum (currently just an empty quota_key
   # string, no packet-type prefix -- see TCPHandler::receiveAddendum).
-  # CRITICAL GAP FOUND LIVE: omitting this step silently desyncs every byte
-  # sent afterwards (the server blocks reading it right after ServerHello,
-  # so the *next* bytes we send -- e.g. the start of a Query packet -- get
-  # consumed as this string instead), which surfaces as a bizarre unrelated
-  # "Empty query" (or worse) error from the server despite an
-  # otherwise-correct Query packet. Confirmed by diffing our own wire bytes
-  # against a real `clickhouse-client` session captured via a TCP proxy.
+  # Omitting this step silently desyncs every byte sent afterwards: the
+  # server blocks reading it right after ServerHello, so the *next* bytes
+  # we send -- e.g. the start of a Query packet -- get consumed as this
+  # string instead, which surfaces as a bizarre unrelated "Empty query"
+  # (or worse) error from the server despite an otherwise-correct Query
+  # packet.
   @min_revision_with_addendum 54_458
 
   defmodule ClientHello do
@@ -228,10 +223,8 @@ defmodule ChDriver.Protocol do
   @doc """
   Encodes a Query packet (Client packet type 1) for `query_string`.
 
-  Field order (confirmed live against ClickHouse 24.8, revision 54469, by
-  capturing real `clickhouse-client` traffic and cross-referencing
-  `Connection::sendQuery` / `TCPHandler::receiveQuery` in ClickHouse's own
-  source at tag v24.8.14.39-lts):
+  Field order (see `Connection::sendQuery` / `TCPHandler::receiveQuery` in
+  ClickHouse's own source, protocol revision 54469):
 
       packet type (varint, 1)
       query_id (string, empty lets the server generate one)
@@ -404,11 +397,11 @@ defmodule ChDriver.Protocol do
   defp array_element_text(other), do: param_text(other)
 
   # ClientInfo sub-structure written as part of a Query packet. Field order
-  # confirmed against ClickHouse's Interpreters/ClientInfo.cpp (write/read,
-  # tag v24.8.14.39-lts) and live traffic. Every optional field below is
-  # gated (in the real source) on a DBMS_MIN_REVISION_WITH_* constant that
-  # `@client_revision` (54465) always satisfies, so we always emit them --
-  # see the revision table in the moduledoc-adjacent comments above.
+  # matches ClickHouse's Interpreters/ClientInfo.cpp (write/read). Every
+  # optional field below is gated (in the real source) on a
+  # DBMS_MIN_REVISION_WITH_* constant that `@client_revision` (54465)
+  # always satisfies, so we always emit them -- see the revision table in
+  # the moduledoc-adjacent comments above.
   defp encode_client_info do
     query_kind_initial_query = 1
     interface_tcp = 1
@@ -479,9 +472,8 @@ defmodule ChDriver.Protocol do
 
   @doc """
   Encodes a Ping packet (Client packet type 4). No body -- just the
-  packet-type varint. Confirmed live against ClickHouse 24.8: the server
-  replies with a bare Pong (Server packet type 4, see `@server_pong` /
-  `decode_packet/1`) and nothing else.
+  packet-type varint. The server replies with a bare Pong (Server packet
+  type 4, see `@server_pong` / `decode_packet/1`) and nothing else.
   """
   @spec encode_ping() :: iodata
   def encode_ping, do: Varint.encode(@client_ping)
@@ -504,8 +496,8 @@ defmodule ChDriver.Protocol do
     * `:end_of_stream`
     * `{:exception, %ChDriver.Error{}}`
 
-  Packet type discriminants and per-type field layouts confirmed live
-  against ClickHouse 24.8 (see module-level comments for how).
+  Packet type discriminants and per-type field layouts are documented in
+  the module-level comments above.
   """
   @spec decode_packet(binary) :: {:ok, term, binary} | {:incomplete, binary} | {:error, term}
   def decode_packet(binary) when is_binary(binary) do
@@ -564,11 +556,10 @@ defmodule ChDriver.Protocol do
     end
   end
 
-  # Exception (Server packet type 2). Confirmed live in the 8a2.5 design
-  # exploration and again here: Int32LE code, varint-length-prefixed name
-  # ("DB::Exception"/"DB::NetException"), varint-length-prefixed message,
-  # varint-length-prefixed stack trace string, trailing UInt8 has_nested
-  # flag. See Exception::write / DB::writeException in
+  # Exception (Server packet type 2): Int32LE code, varint-length-prefixed
+  # name ("DB::Exception"/"DB::NetException"), varint-length-prefixed
+  # message, varint-length-prefixed stack trace string, trailing UInt8
+  # has_nested flag. See Exception::write / DB::writeException in
   # Common/Exception.cpp.
   defp decode_exception_body(binary) do
     with {:code, <<code::signed-little-32, rest::binary>>} <- {:code, binary},
@@ -619,18 +610,15 @@ defmodule ChDriver.Protocol do
     end
   end
 
-  # ProfileInfo (Server packet type 6). Fields confirmed against
-  # QueryPipeline/ProfileInfo.cpp's read/write at tag v24.8.14.39-lts --
-  # BUT the source's `write` gates its trailing
-  # applied_aggregation/rows_before_aggregation pair on
+  # ProfileInfo (Server packet type 6). Fields match
+  # QueryPipeline/ProfileInfo.cpp's read/write, EXCEPT the source's `write`
+  # gates its trailing applied_aggregation/rows_before_aggregation pair on
   # `client_revision >= DBMS_MIN_REVISION_WITH_ROWS_BEFORE_AGGREGATION`
   # (54469), where "client_revision" is the revision *we* advertised in
-  # ClientHello (54465) -- NOT the server's own revision (54469, confirmed
-  # live via ServerHello). Since 54465 < 54469, the server does NOT send
-  # that trailing pair to us. Confirmed live: including it in the decoder
-  # (as the constant alone would naively suggest) desyncs the stream and
-  # corrupts every packet after -- caught by cross-checking decoded field
-  # values against a byte-level replay of the same response.
+  # ClientHello (54465) -- NOT the server's own revision (54469). Since
+  # 54465 < 54469, the server does NOT send that trailing pair to us;
+  # including it in the decoder (as the constant alone would naively
+  # suggest) desyncs the stream and corrupts every packet after.
   defp decode_profile_info_body(binary) do
     with {:ok, rows, rest} <- Varint.decode(binary),
          {:ok, blocks, rest} <- Varint.decode(rest),

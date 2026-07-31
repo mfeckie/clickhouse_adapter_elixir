@@ -175,7 +175,8 @@ defmodule ChDriver.DBConnectionTest do
           end
         end)
 
-        assert {:ok, %Result{rows: [[^n]]}} = ChDriver.query(pool, "SELECT #{n}", [], timeout: 5_000)
+        assert {:ok, %Result{rows: [[^n]]}} =
+                 ChDriver.query(pool, "SELECT #{n}", [], timeout: 5_000)
 
         socket
       end)

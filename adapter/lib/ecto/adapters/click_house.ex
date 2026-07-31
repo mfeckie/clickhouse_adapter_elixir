@@ -42,9 +42,9 @@ defmodule Ecto.Adapters.ClickHouse do
   row removal that `Ecto.Migration.SchemaMigration.down/4` issues via
   `Repo.delete_all/2` is handled by
   `Ecto.Adapters.ClickHouse.Connection.delete_all/1`, which translates it
-  into a `ALTER TABLE ... DELETE WHERE ... SETTINGS mutations_sync = 1` --
-  live-verified against ClickHouse 24.8 to block until the row is actually
-  gone, so the migrator's post-delete state is correct with no polling. See
+  into an `ALTER TABLE ... DELETE WHERE ... SETTINGS mutations_sync = 1`
+  mutation that blocks until the row is actually gone, so the migrator's
+  post-delete state is correct with no polling. See
   `Connection`'s moduledoc for exactly how narrowly that `delete_all` support
   is scoped (single table, no joins/LIMIT/OFFSET).
 
@@ -75,9 +75,9 @@ defmodule Ecto.Adapters.ClickHouse do
   ## overriding the `loaders/2` that `use Ecto.Adapters.SQL` defines by
   ## default (`def loaders(_, type), do: [type]`, i.e. no coercion at all).
   ##
-  ## `DateTime` columns need no equivalent override: `NativeBlock` now
-  ## decodes ClickHouse's `DateTime` type directly into a UTC `DateTime.t()`
-  ## (clickhouse_adapter_elixir-8a2.18), and Ecto's built-in `:naive_datetime`
+  ## `DateTime` columns need no equivalent override: `NativeBlock` decodes
+  ## ClickHouse's `DateTime` type directly into a UTC `DateTime.t()`,
+  ## and Ecto's built-in `:naive_datetime`
   ## / `:utc_datetime` loaders already accept a UTC `DateTime.t()` as input
   ## (see `Ecto.Type.load/2`), so the default `loaders/2` clause below is
   ## sufficient for both.

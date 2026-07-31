@@ -1,11 +1,10 @@
 defmodule ChDriver.LowCardinalityTest do
   @moduledoc """
   Live integration coverage for `LowCardinality(T)` column decoding
-  (clickhouse_adapter_elixir-8a2.19) against a real ClickHouse table --
-  confirming dictionary dedup with repeated values, and both the UInt8 and
-  UInt16 dictionary-index width tiers (see
-  `ChDriver.Protocol.NativeBlock.decode_low_cardinality/3`'s moduledoc for
-  the exact wire format this was reverse-engineered from, live).
+  against a real ClickHouse table -- covering dictionary dedup with
+  repeated values, and both the UInt8 and UInt16 dictionary-index width
+  tiers (see `ChDriver.Protocol.NativeBlock.decode_low_cardinality/3`'s
+  moduledoc for the exact wire format).
 
   Requires `docker compose up -d` (from `adapter/`) to have been run first.
   """

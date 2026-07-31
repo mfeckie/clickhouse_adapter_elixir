@@ -88,8 +88,8 @@ defmodule ChDriver.QueryTest do
       assert rows == []
     end
 
-    # Nullable(T) support (clickhouse_adapter_elixir-8a2.17): a NULL value
-    # decodes to `nil`, a present value decodes normally.
+    # Nullable(T) support: a NULL value decodes to `nil`, a present value
+    # decodes normally.
     test "a Nullable column decodes NULL to nil and a present value normally", %{conn: conn} do
       assert {:ok, %{columns: columns, rows: rows}} =
                Connection.query(conn, "SELECT CAST(NULL AS Nullable(String)) AS x")
@@ -105,12 +105,12 @@ defmodule ChDriver.QueryTest do
     end
 
     # An unsupported inner type still surfaces cleanly through the Nullable
-    # wrapper rather than hanging/crashing. UUID and IPv6 (previously used
-    # here) are now decoded (clickhouse_adapter_elixir-8a2.19 and .21
-    # respectively); UInt128 remains outside this module's pragmatic subset
-    # of the type system (see `ChDriver.Protocol.NativeBlock`'s moduledoc --
-    # only up to UInt64/Int64 are covered) so it still exercises this
-    # "unsupported type" error path.
+    # wrapper rather than hanging/crashing. UUID and IPv6 are decoded types
+    # and so no longer trigger this path; UInt128 remains outside this
+    # module's pragmatic subset of the type system (see
+    # `ChDriver.Protocol.NativeBlock`'s moduledoc -- only up to
+    # UInt64/Int64 are covered) so it still exercises this "unsupported
+    # type" error path.
     test "a Nullable wrapping an unsupported inner type fails cleanly (no hang/crash)", %{
       conn: conn
     } do

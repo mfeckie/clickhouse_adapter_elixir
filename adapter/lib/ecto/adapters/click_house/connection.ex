@@ -244,7 +244,7 @@ defmodule Ecto.Adapters.ClickHouse.Connection do
       query,
       "the ClickHouse adapter does not support UPDATE: ClickHouse mutates existing data via " <>
         "the asynchronous `ALTER TABLE ... UPDATE` statement, not a synchronous SQL UPDATE, " <>
-        "so update_all/2 is deliberately unimplemented -- issue an ALTER TABLE mutation " <>
+        "so update_all/2 is unimplemented -- issue an ALTER TABLE mutation " <>
         "directly via a raw query if you need this"
     )
   end
@@ -256,15 +256,15 @@ defmodule Ecto.Adapters.ClickHouse.Connection do
   ## in the background by default. However, that mutation accepts a
   ## `SETTINGS mutations_sync = 1` clause that makes the *issuing client*
   ## block until the mutation has actually been applied locally before the
-  ## query returns -- confirmed live against ClickHouse 24.8. That's exactly
+  ## query returns. That's exactly
   ## what's needed to make `Ecto.Migration.SchemaMigration.down/4`'s
   ## `repo.delete_all(from m in "schema_migrations", where: m.version == ^v)`
   ## behave synchronously enough for `Ecto.Migrator.run(repo, path, :down,
   ## ...)` to work: insert the row (`up`), delete it and immediately have it
   ## gone (`down`), no polling or manual mutation-tracking required.
   ##
-  ## This is genuinely a mutation under the hood, not a real transactional
-  ## DELETE, so the scope here is deliberately narrow to what maps cleanly
+  ## This is a mutation under the hood, not a real transactional
+  ## DELETE, so the scope here is narrow, limited to what maps cleanly
   ## onto a single `ALTER TABLE ... DELETE WHERE <cond>`:
   ##
   ##   * a single source table (no joins)
@@ -302,7 +302,7 @@ defmodule Ecto.Adapters.ClickHouse.Connection do
     # bare table name. Build a one-element sources tuple with an empty
     # alias so `where/2`/`expr/3` emit unqualified `"version"` instead of
     # `s0."version"` (which ClickHouse would reject: "Missing columns:
-    # 's0.version'", confirmed live -- there's no `s0` in scope here).
+    # 's0.version'" -- there's no `s0` in scope here).
     {table, schema, prefix} = elem(sources, 0)
     table_sql = quote_table(prefix, table)
     delete_sources = {{table_sql, "", schema}}
@@ -376,7 +376,7 @@ defmodule Ecto.Adapters.ClickHouse.Connection do
     raise ArgumentError,
           "the ClickHouse adapter does not support UPDATE: ClickHouse mutates existing data " <>
             "via the asynchronous `ALTER TABLE ... UPDATE` statement, not a synchronous SQL " <>
-            "UPDATE, so update/5 is deliberately unimplemented -- issue an ALTER TABLE " <>
+            "UPDATE, so update/5 is unimplemented -- issue an ALTER TABLE " <>
             "mutation directly via a raw query if you need this"
   end
 
@@ -385,7 +385,7 @@ defmodule Ecto.Adapters.ClickHouse.Connection do
     raise ArgumentError,
           "the ClickHouse adapter does not support DELETE: ClickHouse mutates existing data " <>
             "via the asynchronous `ALTER TABLE ... DELETE` statement, not a synchronous SQL " <>
-            "DELETE, so delete/4 is deliberately unimplemented -- issue an ALTER TABLE " <>
+            "DELETE, so delete/4 is unimplemented -- issue an ALTER TABLE " <>
             "mutation directly via a raw query if you need this"
   end
 
@@ -744,8 +744,8 @@ defmodule Ecto.Adapters.ClickHouse.Connection do
 
     # `null: true` is Ecto's own default (matching every other Ecto
     # adapter): a column is nullable unless `null: false` is given
-    # explicitly. `ChDriver.Protocol.NativeBlock` now decodes `Nullable(T)`
-    # (clickhouse_adapter_elixir-8a2.17), so this maps straight through to a
+    # explicitly. `ChDriver.Protocol.NativeBlock` decodes `Nullable(T)`,
+    # so this maps straight through to a
     # `Nullable(...)` column type. A `:primary_key` column is never
     # wrapped in `Nullable`, regardless of the `:null` option, since
     # ClickHouse's `ORDER BY`/primary key columns can't be `Nullable`.
@@ -788,12 +788,12 @@ defmodule Ecto.Adapters.ClickHouse.Connection do
   def column_type!(:date), do: "Date"
   def column_type!(:decimal), do: "Decimal(38, 9)"
 
-  # `IPv4`/`IPv6` (clickhouse_adapter_elixir-8a2.21) decode to their dotted-
+  # `IPv4`/`IPv6` decode to their dotted-
   # quad/colon-hex text forms (see
   # `ChDriver.Protocol.NativeBlock.decode_ipv4/1`/`decode_ipv6/1`) and accept
   # a plain string literal on INSERT (ClickHouse parses `'192.168.1.1'`/
-  # `'2001:db8::1'` into the column's native binary representation itself,
-  # confirmed live) -- so, like `:uuid`, they're plain first-class Ecto
+  # `'2001:db8::1'` into the column's native binary representation itself)
+  # -- so, like `:uuid`, they're plain first-class Ecto
   # migration types here with a plain `:string` schema field on the other
   # end.
   def column_type!(:ipv4), do: "IPv4"
@@ -801,7 +801,7 @@ defmodule Ecto.Adapters.ClickHouse.Connection do
 
   # `{:array, inner_type}` is Ecto's own built-in shorthand for an array
   # column (`add(:tags, {:array, :string})` in a migration) -- maps
-  # straight onto ClickHouse's `Array(T)` (clickhouse_adapter_elixir-8a2.19),
+  # straight onto ClickHouse's `Array(T)`,
   # recursing so `{:array, :integer}` -> `Array(Int32)`, etc.
   def column_type!({:array, inner_type}), do: "Array(#{column_type!(inner_type)})"
 
@@ -809,8 +809,8 @@ defmodule Ecto.Adapters.ClickHouse.Connection do
   # `add(:status, :"LowCardinality(String)")`) -- `Ecto.Migration.add/3`
   # validates its `type` argument itself before this adapter ever sees it,
   # and only accepts atoms/quoted-atoms/composite tuples/references (a
-  # plain string is rejected outright with "invalid migration type",
-  # confirmed live), so a quoted atom -- exactly what Ecto's own error
+  # plain string is rejected outright with "invalid migration type"),
+  # so a quoted atom -- exactly what Ecto's own error
   # message suggests for adapter-specific types -- is the escape hatch here
   # rather than a raw binary. This is for ClickHouse-specific column types
   # with no clean Ecto-type equivalent (`LowCardinality(T)` chief among
@@ -1081,7 +1081,7 @@ defmodule Ecto.Adapters.ClickHouse.Connection do
   defp create_alias(<<first, _rest::binary>>) when first in ?a..?z when first in ?A..?Z, do: first
   defp create_alias(_), do: ?t
 
-  ## Quoting -- confirmed live against ClickHouse 24.8: double quotes are
+  ## Quoting -- double quotes are
   ## accepted for identifiers (`SELECT "id" FROM "events"`); backticks work
   ## too, but double quotes are the ANSI-standard choice and match what the
   ## rest of the Ecto ecosystem (Postgres) expects, so that's what's used

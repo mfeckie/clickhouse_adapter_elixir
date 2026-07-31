@@ -1,10 +1,9 @@
 defmodule ChDriver.Ipv4Test do
   @moduledoc """
-  Live integration coverage for `IPv4` column decoding
-  (clickhouse_adapter_elixir-8a2.21) against a real ClickHouse table --
-  confirming the dotted-quad text-form decode (see
-  `ChDriver.Protocol.NativeBlock.decode_ipv4/1`) round-trips real addresses,
-  including the all-zero and all-ones edge cases.
+  Live integration coverage for `IPv4` column decoding against a real
+  ClickHouse table -- the dotted-quad text-form decode (see
+  `ChDriver.Protocol.NativeBlock.decode_ipv4/1`) round-trips real
+  addresses, including the all-zero and all-ones edge cases.
 
   Requires `docker compose up -d` (from `adapter/`) to have been run first.
   """

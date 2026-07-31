@@ -1,8 +1,7 @@
 defmodule Ecto.Adapters.ClickHouse.StorageMigrationTest do
   @moduledoc """
   End-to-end integration test against a *live* ClickHouse instance (see
-  `adapter/docker-compose.yml`) -- the acceptance bar for
-  clickhouse_adapter_elixir-8a2.12: `Ecto.Adapter.Storage`
+  `adapter/docker-compose.yml`): `Ecto.Adapter.Storage`
   (`storage_up/1`/`storage_down/1`/`storage_status/1`) and a real
   `Ecto.Migration` actually creating a table via `Ecto.Migrator.run/4`
   against a real server, not just unit-testing DDL string generation.
@@ -104,7 +103,7 @@ defmodule Ecto.Adapters.ClickHouse.StorageMigrationTest do
     ChDriver.query(ddl_conn, "DROP TABLE IF EXISTS schema_migrations")
   end
 
-  test "a change/0 migration's create table is fully reversible via Ecto.Migrator :down (clickhouse_adapter_elixir-8a2.16)" do
+  test "a change/0 migration's create table is fully reversible via Ecto.Migrator :down" do
     {:ok, ddl_conn} = ChDriver.start_link(hostname: "localhost", port: 9000)
     {:ok, _} = ChDriver.query(ddl_conn, "DROP TABLE IF EXISTS widgets")
     {:ok, _} = ChDriver.query(ddl_conn, "DROP TABLE IF EXISTS schema_migrations")

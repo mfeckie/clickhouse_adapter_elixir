@@ -1,9 +1,8 @@
 defmodule ChDriver.FixedStringTest do
   @moduledoc """
-  Live integration coverage for `FixedString(N)` column decoding
-  (clickhouse_adapter_elixir-8a2.21) against a real ClickHouse table --
-  including the confirmed-live fact that ClickHouse does *not* trim the
-  null-byte padding back out on `SELECT` (see
+  Live integration coverage for `FixedString(N)` column decoding against a
+  real ClickHouse table -- including the fact that ClickHouse does *not*
+  trim the null-byte padding back out on `SELECT` (see
   `ChDriver.Protocol.NativeBlock.decode_map/3`'s neighboring `FixedString`
   moduledoc for the exact wire-format details).
 

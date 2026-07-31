@@ -1,9 +1,8 @@
 defmodule ChDriver.ArrayTest do
   @moduledoc """
-  Live integration coverage for `Array(T)` column decoding
-  (clickhouse_adapter_elixir-8a2.19) against a real ClickHouse table -- a
-  real `CREATE TABLE` / `INSERT` / `SELECT` round-trip through
-  `ChDriver.query/2`, per the issue's acceptance criteria.
+  Live integration coverage for `Array(T)` column decoding against a real
+  ClickHouse table: a real `CREATE TABLE` / `INSERT` / `SELECT` round-trip
+  through `ChDriver.query/2`.
 
   Requires `docker compose up -d` (from `adapter/`) to have been run first.
   """
@@ -69,7 +68,7 @@ defmodule ChDriver.ArrayTest do
     assert rows == [[1, ["a", "bb", "ccc"]], [2, ["solo"]], [3, []]]
   end
 
-  test "an Array(Nullable(UInt32)) column round-trips NULL elements within an array (confirmed live that ClickHouse rejects the reverse nesting, Nullable(Array(T)), outright)",
+  test "an Array(Nullable(UInt32)) column round-trips NULL elements within an array (ClickHouse rejects the reverse nesting, Nullable(Array(T)), outright)",
        %{
          conn: conn,
          table: table

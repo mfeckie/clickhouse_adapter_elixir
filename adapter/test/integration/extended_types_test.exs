@@ -1,7 +1,7 @@
 defmodule Ecto.Adapters.ClickHouse.ExtendedTypesIntegrationTest do
   @moduledoc """
-  End-to-end integration coverage for the extended native type support added
-  in clickhouse_adapter_elixir-8a2.19 (`Array(T)`, `Decimal(P, S)`, `UUID`,
+  End-to-end integration coverage for the extended native type support
+  (`Array(T)`, `Decimal(P, S)`, `UUID`,
   and `LowCardinality(T)`), against a *live* ClickHouse instance (see
   `adapter/docker-compose.yml`):
 
@@ -19,15 +19,15 @@ defmodule Ecto.Adapters.ClickHouse.ExtendedTypesIntegrationTest do
       migration type of its own -- a raw ClickHouse type given verbatim as
       a quoted atom in the migration
       (`add(:status, :"LowCardinality(String)")` -- `Ecto.Migration.add/3`
-      itself rejects a plain string here, confirmed live) plus a plain
+      itself rejects a plain string here) plus a plain
       `:string` schema field round-trips exactly like a bare `String`
       column would.
 
-  Also covers `:ipv4`/`:ipv6` (clickhouse_adapter_elixir-8a2.21): first-class
+  Also covers `:ipv4`/`:ipv6`: first-class
   Ecto migration types mapping to ClickHouse's `IPv4`/`IPv6` column types,
   paired with a plain `:string` schema field on the other end (see
-  `Ecto.Adapters.ClickHouse.Connection.column_type!/1`). `Map(K, V)` (also
-  added in 8a2.21) is deliberately *not* covered here at the Ecto level --
+  `Ecto.Adapters.ClickHouse.Connection.column_type!/1`). `Map(K, V)` is
+  not covered here at the Ecto level --
   it round-trips fine as a raw ClickHouse type given verbatim as a quoted
   atom (`add(:m, :"Map(String, UInt32)")`) paired with Ecto's built-in
   `:map` schema type, exactly like the `LowCardinality(String)` pattern

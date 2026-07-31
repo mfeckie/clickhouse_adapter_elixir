@@ -1,9 +1,9 @@
 defmodule ChDriver.Ipv6Test do
   @moduledoc """
-  Live integration coverage for `IPv6` column decoding
-  (clickhouse_adapter_elixir-8a2.21) against a real ClickHouse table --
-  confirming the colon-hex text-form decode via `:inet.ntoa/1` (see
-  `ChDriver.Protocol.NativeBlock.decode_ipv6/1`) round-trips real addresses.
+  Live integration coverage for `IPv6` column decoding against a real
+  ClickHouse table -- the colon-hex text-form decode via `:inet.ntoa/1`
+  (see `ChDriver.Protocol.NativeBlock.decode_ipv6/1`) round-trips real
+  addresses.
 
   ClickHouse canonicalizes `IPv6` text on output (e.g. it always writes the
   `::ffff:` IPv4-mapped prefix in lowercase-hex-group form rather than

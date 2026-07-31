@@ -4,11 +4,9 @@ defmodule ChDriver.Protocol.NativeBlock do
   Data (or wire-identical ProfileEvents) packet once compression is
   disabled (this driver always negotiates `compression: 0` in
   `ChDriver.Protocol.encode_query/2`, so blocks are never wrapped in
-  `ChNative.Block`'s compressed envelope; see the design decision recorded
-  in clickhouse_adapter_elixir-8a2.5).
+  `ChNative.Block`'s compressed envelope).
 
-  Format (confirmed live against ClickHouse 24.8, revision 54469, cross
-  referenced against `Formats/NativeReader.cpp` at tag v24.8.14.39-lts):
+  Format (matches `Formats/NativeReader.cpp`, protocol revision 54469):
 
       external_table_name (string -- only present when this block is the
         payload of a Data/ProfileEvents *packet*; see `decode_data_packet/1`)
@@ -33,8 +31,8 @@ defmodule ChDriver.Protocol.NativeBlock do
   alongside every query result (String, DateTime, UInt64, Enum8, Int64).
 
   `Nullable(T)` is supported as a wrapper around any of the above: on the
-  wire it is a `row_count`-byte null map (1 = null, 0 = not null,
-  confirmed against ClickHouse's `ColumnNullable.cpp`
+  wire it is a `row_count`-byte null map (1 = null, 0 = not null, per
+  ClickHouse's `ColumnNullable.cpp`
   `deserializeBinaryBulkWithMultipleStreams`) immediately followed by `T`'s
   normal column data for *all* rows -- including the null ones, whose
   underlying value is a meaningless placeholder (typically `T`'s
@@ -43,9 +41,8 @@ defmodule ChDriver.Protocol.NativeBlock do
   should be added alongside `Nullable` -- each gets its own dispatch clause
   and decoder function rather than deeper `column_codec/1` special-casing.
 
-  Also supported, following the same pattern (each confirmed live against
-  ClickHouse 24.8 -- see the `decode_*` function for each for the exact
-  wire-format details):
+  Also supported, following the same pattern (see the `decode_*` function
+  for each for the exact wire-format details):
 
     * `Array(T)` for any `T` this module already knows how to decode
       (including nested wrappers, e.g. `Array(Nullable(String))`).
@@ -54,21 +51,21 @@ defmodule ChDriver.Protocol.NativeBlock do
       `Decimal.t()`.
     * `UUID`.
     * `LowCardinality(T)` for any scalar `T` (String, integers, etc).
-    * `FixedString(N)` (clickhouse_adapter_elixir-8a2.21), decoded to a raw
-      `N`-byte Elixir binary, null-padding included verbatim.
-    * `IPv4` (clickhouse_adapter_elixir-8a2.21), decoded to its dotted-quad
-      text form (matching the `UUID`/text-form convention already used by
-      this module -- see `decode_ipv4/1`).
-    * `IPv6` (clickhouse_adapter_elixir-8a2.21), decoded to its standard
-      colon-hex text form via `:inet.ntoa/1` (see `decode_ipv6/1`).
-    * `Map(K, V)` (clickhouse_adapter_elixir-8a2.21) for any scalar `K`/`V`
-      this module already knows how to decode, decoded to an Elixir `map()`
-      per row (see `decode_map/3` for the confirmed-live wire format).
+    * `FixedString(N)`, decoded to a raw `N`-byte Elixir binary,
+      null-padding included verbatim.
+    * `IPv4`, decoded to its dotted-quad text form (matching the
+      `UUID`/text-form convention already used by this module -- see
+      `decode_ipv4/1`).
+    * `IPv6`, decoded to its standard colon-hex text form via
+      `:inet.ntoa/1` (see `decode_ipv6/1`).
+    * `Map(K, V)` for any scalar `K`/`V` this module already knows how to
+      decode, decoded to an Elixir `map()` per row (see `decode_map/3` for
+      the wire format).
 
-  Deliberately still deferred: `Tuple(...)` in its own right (only
-  supported today as `Map(K, V)`'s implicit internal representation, not as
-  a directly-selectable column type -- see `decode_map/3`'s moduledoc for
-  why generalizing it is more work than it looks).
+  `Tuple(...)` is not supported in its own right -- only as `Map(K, V)`'s
+  implicit internal representation, not as a directly-selectable column
+  type (see `decode_map/3`'s moduledoc for why generalizing it is more
+  work than it looks).
 
   ## Sparse serialization
 
@@ -77,7 +74,7 @@ defmodule ChDriver.Protocol.NativeBlock do
   `ratio_of_defaults_for_sparse_serialization`, default `0.9`), regardless
   of whether the user asked for it. On the wire this shows up as the
   `has_custom_serialization` byte (see above) being `1`, followed by one
-  more `UInt8` "serialization kind" byte (confirmed against ClickHouse's
+  more `UInt8` "serialization kind" byte (per ClickHouse's
   `ISerialization::Kind` enum in `ISerialization.h` and
   `SerializationInfo::deserializeFromKindsBinary` in
   `SerializationInfo.cpp`): `0` = `DEFAULT` (never actually sent, since
@@ -88,12 +85,10 @@ defmodule ChDriver.Protocol.NativeBlock do
   clear error rather than guessed at, since it would mean a newer
   ClickHouse serialization kind this driver doesn't understand.
 
-  Sparse's own column-data encoding (confirmed against
+  Sparse's own column-data encoding (matches
   `SerializationSparse.cpp`'s `serializeOffsets`/`deserializeOffsets`/
-  `deserializeBinaryBulkWithMultipleStreams`, and cross-checked live against
-  a real MergeTree column ClickHouse chose to store as `Sparse`) is two
-  back-to-back substreams -- *not* a null-map-style parallel array like
-  `Nullable`:
+  `deserializeBinaryBulkWithMultipleStreams`) is two back-to-back
+  substreams -- *not* a null-map-style parallel array like `Nullable`:
 
     * `SparseOffsets`: a sequence of `UInt64` varints, each a "group size"
       -- the number of consecutive default-valued rows since the last
@@ -374,8 +369,8 @@ defmodule ChDriver.Protocol.NativeBlock do
 
   defp parse_fixed_string(_type), do: :error
 
-  # `Nullable(T)`'s wire format (confirmed against ClickHouse's
-  # `ColumnNullable.cpp` and cross-referenced with clickhouse-driver
+  # `Nullable(T)`'s wire format (per ClickHouse's
+  # `ColumnNullable.cpp`, matching clickhouse-driver
   # Python's `columns/nullablecolumn.py`): a `num_rows`-byte null map
   # (1 = null, 0 = not null) immediately followed by `T`'s own column data
   # for *all* `num_rows` rows. The underlying value for a null row is a
@@ -395,9 +390,9 @@ defmodule ChDriver.Protocol.NativeBlock do
     end
   end
 
-  # `Array(T)`'s wire format (confirmed against ClickHouse's
-  # `ColumnArray.cpp` `deserializeBinaryBulkWithMultipleStreams`, and
-  # cross-referenced with clickhouse-driver Python's
+  # `Array(T)`'s wire format (per ClickHouse's
+  # `ColumnArray.cpp` `deserializeBinaryBulkWithMultipleStreams`, matching
+  # clickhouse-driver Python's
   # `columns/arraycolumn.py`): a `num_rows`-long array of cumulative
   # little-endian `UInt64` offsets (offsets[i] is the end index, exclusive,
   # of row i's elements in the flattened value array below -- so
@@ -429,9 +424,7 @@ defmodule ChDriver.Protocol.NativeBlock do
     rows
   end
 
-  # `Map(K, V)`'s wire format (confirmed live against ClickHouse 24.8, byte-
-  # for-byte, against a real `Map(String, UInt32)` column with both empty
-  # and populated map values): ClickHouse's own documentation and
+  # `Map(K, V)`'s wire format: ClickHouse's own documentation and
   # `DataTypeMap.cpp` state that `Map(K, V)` is implemented internally as
   # `Array(Tuple(K, V))`, and its wire encoding follows that exactly --
   # `num_rows`-long cumulative little-endian `UInt64` offsets (identical to
@@ -441,9 +434,8 @@ defmodule ChDriver.Protocol.NativeBlock do
   # `K`, decoded via `K`'s own `decode_column_data/3`) and then the *whole
   # flattened value column* (`total_elements` values of `V`) -- i.e. a
   # `Tuple(K, V)` column is serialized as one sub-stream per tuple field,
-  # back to back, not as interleaved (key, value) pairs. Confirmed live by
-  # decoding a captured `Map(String, UInt32)` payload by hand: interpreting
-  # the bytes as "all offsets, then all keys, then all values" round-trips
+  # back to back, not as interleaved (key, value) pairs. Interpreting the
+  # bytes as "all offsets, then all keys, then all values" round-trips
   # `{'a':1,'b':2}` correctly, while an interleaved-pairs reading does not
   # (it misaligns the `String` length-prefix bytes against unrelated
   # `UInt32` value bytes).
@@ -465,12 +457,11 @@ defmodule ChDriver.Protocol.NativeBlock do
   @end_of_granule_flag 0x4000000000000000
 
   # Sparse's wire format (see the moduledoc's "Sparse serialization"
-  # section for the full byte-level explanation, confirmed against
-  # `SerializationSparse.cpp` and live against a real ClickHouse `Sparse`
-  # column): a `SparseOffsets` varint stream giving the position of every
-  # non-default row, followed by a `SparseElements` stream of exactly that
-  # many densely-packed values of `inner_type`, decoded via
-  # `decode_column_data/3` like any other wrapper type here.
+  # section for the full byte-level explanation; matches
+  # `SerializationSparse.cpp`): a `SparseOffsets` varint stream giving the
+  # position of every non-default row, followed by a `SparseElements`
+  # stream of exactly that many densely-packed values of `inner_type`,
+  # decoded via `decode_column_data/3` like any other wrapper type here.
   defp decode_sparse(inner_type, num_rows, binary) do
     with {:ok, offsets, rest} <- decode_sparse_offsets(binary),
          {:ok, default} <- default_value(inner_type),
@@ -595,21 +586,19 @@ defmodule ChDriver.Protocol.NativeBlock do
     end
   end
 
-  # `FixedString(N)`'s wire format (confirmed live against ClickHouse 24.8
-  # via `hex(toFixedString('ab', 5))` -> `6162000000`, and cross-referenced
-  # with `DataTypeFixedString.cpp`'s `deserializeBinaryBulk`): exactly `N`
-  # raw bytes per row, right-padded with `0x00` up to `N` if the value is
-  # shorter -- unlike `String`, there is no length-prefix varint at all, and
-  # unlike `String`'s own null-termination-free encoding, the padding bytes
-  # are real wire content. Confirmed live (via `length(f)` on a real
-  # `FixedString(5)` column holding `'ab'`) that ClickHouse does **not**
-  # trim the padding back out on `SELECT` -- the padded value is the
-  # column's actual value -- so this decodes to the raw `N`-byte binary
-  # verbatim, trailing NULs included, via the generic `decode_fixed_width/4`
-  # with an identity unpack function (see `parse_fixed_string/1`'s call
-  # site).
+  # `FixedString(N)`'s wire format (`hex(toFixedString('ab', 5))` ->
+  # `6162000000`; matches `DataTypeFixedString.cpp`'s
+  # `deserializeBinaryBulk`): exactly `N` raw bytes per row, right-padded
+  # with `0x00` up to `N` if the value is shorter -- unlike `String`, there
+  # is no length-prefix varint at all, and unlike `String`'s own
+  # null-termination-free encoding, the padding bytes are real wire
+  # content. ClickHouse does **not** trim the padding back out on
+  # `SELECT` -- the padded value is the column's actual value -- so this
+  # decodes to the raw `N`-byte binary verbatim, trailing NULs included,
+  # via the generic `decode_fixed_width/4` with an identity unpack
+  # function (see `parse_fixed_string/1`'s call site).
 
-  # `IPv4`'s wire format (confirmed live: `hex(reinterpretAsFixedString(
+  # `IPv4`'s wire format (`hex(reinterpretAsFixedString(
   # toIPv4('192.168.1.1')))` -> `0101A8C0`, i.e. the same little-endian
   # `UInt32` encoding as every other ClickHouse integer type -- `192.168.1.1`
   # is `0xC0A80101` as a plain big-endian-read integer, and the wire bytes
@@ -622,7 +611,7 @@ defmodule ChDriver.Protocol.NativeBlock do
     "#{a}.#{b}.#{c}.#{d}"
   end
 
-  # `IPv6`'s wire format (confirmed live: `hex(reinterpretAsFixedString(
+  # `IPv6`'s wire format (`hex(reinterpretAsFixedString(
   # toIPv6('2001:db8::1')))` -> `20010DB8000000000000000000000001`, and
   # `hex(reinterpretAsFixedString(toIPv6('::ffff:192.168.1.1')))` ->
   # `00000000000000000000FFFFC0A80101`): a plain 16-byte value in standard
@@ -635,9 +624,9 @@ defmodule ChDriver.Protocol.NativeBlock do
     {a, b, c, d, e, f, g, h} |> :inet.ntoa() |> to_string()
   end
 
-  # `Decimal(P, S)`'s wire format (confirmed against ClickHouse's
-  # `ColumnDecimal.h`/`DataTypeDecimalBase.h`, and cross-referenced with
-  # clickhouse-driver Python's `columns/decimalcolumn.py`): a fixed-width
+  # `Decimal(P, S)`'s wire format (matches ClickHouse's
+  # `ColumnDecimal.h`/`DataTypeDecimalBase.h`, and clickhouse-driver
+  # Python's `columns/decimalcolumn.py`): a fixed-width
   # *signed* little-endian integer holding the unscaled value, whose byte
   # width is chosen from the precision `P` alone (not stored on the wire --
   # `decimal_byte_size/1` mirrors ClickHouse's own
@@ -686,9 +675,7 @@ defmodule ChDriver.Protocol.NativeBlock do
     end
   end
 
-  # `UUID`'s wire format (confirmed live against ClickHouse 24.8 by
-  # `reinterpretAsFixedString`-ing a known UUID and comparing raw bytes
-  # against its text representation): 16 bytes, laid out as the UUID's
+  # `UUID`'s wire format: 16 bytes, laid out as the UUID's
   # standard 16 text-representation bytes with *each 8-byte half
   # byte-reversed independently* -- i.e. NOT the naive byte order, and NOT
   # a swap of the two halves either. Concretely, for UUID
@@ -709,11 +696,8 @@ defmodule ChDriver.Protocol.NativeBlock do
   end
 
   # `LowCardinality(T)`'s wire format is a dictionary-encoded column
-  # (confirmed live against ClickHouse 24.8, byte-for-byte, against a real
-  # `LowCardinality(String)` column with repeated and distinct values --
-  # cross-referenced with `ColumnLowCardinality.cpp`/
-  # `SerializationLowCardinality.cpp` and clickhouse-driver Python's
-  # `columns/lowcardinalitycolumn.py`):
+  # (matches `ColumnLowCardinality.cpp`/`SerializationLowCardinality.cpp`
+  # and clickhouse-driver Python's `columns/lowcardinalitycolumn.py`):
   #
   #     key_version (UInt64) -- always 1
   #       (`SharedDictionariesWithAdditionalKeys`); not otherwise used here.
@@ -739,7 +723,7 @@ defmodule ChDriver.Protocol.NativeBlock do
   # A block with zero rows (ClickHouse sends one of these as a
   # structure-only "header" block ahead of the real data block(s) for every
   # query) writes zero bytes of column data for `LowCardinality`, exactly
-  # like every other type here -- confirmed live: attempting to parse the
+  # like every other type here. Attempting to parse the
   # `key_version`/`index_type_and_flags`/`dictionary_size` fields
   # unconditionally hangs/times out the connection on an empty header
   # block, since there are no such bytes to read when there are no rows.
@@ -811,10 +795,10 @@ defmodule ChDriver.Protocol.NativeBlock do
   # ClickHouse's plain `DateTime` (and `DateTime(timezone)`, whose wire
   # encoding is identical -- the parameter only affects display/parsing
   # timezone, not storage) is a little-endian `UInt32` Unix-epoch second
-  # count (confirmed live against ClickHouse 24.8: `SELECT
-  # toUInt32(now())` matches the raw bytes of a `DateTime` column holding
-  # the same instant). There's no fractional-second component -- that's
-  # `DateTime64(N)`, not handled here -- so this always decodes to a
+  # count (`SELECT toUInt32(now())` matches the raw bytes of a `DateTime`
+  # column holding the same instant). There's no fractional-second
+  # component -- that's `DateTime64(N)`, not handled here -- so this
+  # always decodes to a
   # whole-second `DateTime.t()` in `Etc/UTC` (the epoch itself is
   # timezone-agnostic; `Etc/UTC` is just the zone used to represent it as
   # an Elixir struct, matching how Ecto's built-in `:naive_datetime`/

@@ -1,8 +1,7 @@
 defmodule Ecto.Adapters.ClickHouse.RepoAdvancedIntegrationTest do
   @moduledoc """
   Further end-to-end integration coverage against a *live* ClickHouse
-  instance (see `adapter/docker-compose.yml`) for
-  clickhouse_adapter_elixir-8a2.14, filling gaps not covered by
+  instance (see `adapter/docker-compose.yml`), filling gaps not covered by
   `repo_test.exs`:
 
     * a more realistic mixed-column-type schema on a `MergeTree` table
@@ -22,9 +21,7 @@ defmodule Ecto.Adapters.ClickHouse.RepoAdvancedIntegrationTest do
     * `:boolean` Ecto fields backed by ClickHouse's conventional `UInt8`
       boolean encoding, and `DateTime` columns mapped to
       `:naive_datetime`/`:utc_datetime` Ecto fields, round-tripping correctly
-      through `Repo.insert!/1`/`Repo.all/1` (clickhouse_adapter_elixir-8a2.18
-      -- see the dedicated tests below; this used to be a documented gap
-      where both raised `ArgumentError` at load time).
+      through `Repo.insert!/1`/`Repo.all/1` (see the dedicated tests below).
 
   Requires `docker compose up -d` (from `adapter/`) to have been run first.
   """
@@ -37,7 +34,7 @@ defmodule Ecto.Adapters.ClickHouse.RepoAdvancedIntegrationTest do
     use Ecto.Repo, otp_app: :clickhouse_adapter_elixir, adapter: Ecto.Adapters.ClickHouse
   end
 
-  # Deliberately excludes the table's `active UInt8` and `recorded_at
+  # Excludes the table's `active UInt8` and `recorded_at
   # DateTime` columns -- see `BoolMeasurement`/`TimestampMeasurement` below,
   # which map those columns to `:boolean`/`:naive_datetime` fields instead.
   defmodule Measurement do
@@ -105,10 +102,8 @@ defmodule Ecto.Adapters.ClickHouse.RepoAdvancedIntegrationTest do
     # No `ratio_of_defaults_for_sparse_serialization` override here: a
     # mostly-`0`/default UInt8 column like `active` will legitimately get
     # sparse-encoded on disk once enough default-valued rows accumulate
-    # across this file's tests, and `ChDriver.Protocol.NativeBlock` now
-    # decodes that correctly (clickhouse_adapter_elixir-8a2.20; see
-    # `ChDriver.SparseTest` for dedicated live coverage) -- this table no
-    # longer needs to work around it.
+    # across this file's tests, and `ChDriver.Protocol.NativeBlock` decodes
+    # that correctly (see `ChDriver.SparseTest` for dedicated coverage).
     {:ok, _} =
       ChDriver.query(
         ddl_conn,
@@ -188,9 +183,9 @@ defmodule Ecto.Adapters.ClickHouse.RepoAdvancedIntegrationTest do
       %{id: 3, label: "c", small_count: 3, big_count: 3, ratio: 3.0}
     ]
 
-    # The insert genuinely happens (all 3 rows land, batched into one
-    # `INSERT ... VALUES (...), (...), (...)` statement -- confirmed via the
-    # row count below) -- but unlike Postgres/MyXQL, ClickHouse's native
+    # The insert happens (all 3 rows land, batched into one
+    # `INSERT ... VALUES (...), (...), (...)` statement, as the row count
+    # below shows) -- but unlike Postgres/MyXQL, ClickHouse's native
     # protocol reports `num_rows: 0` for a successful INSERT (there's no
     # "rows affected" concept), and `Ecto.Adapters.SQL.insert_all/9` doesn't
     # get the same `num_rows: 0`-is-fine override that
@@ -302,15 +297,14 @@ defmodule Ecto.Adapters.ClickHouse.RepoAdvancedIntegrationTest do
   end
 
   test "a :boolean Ecto field backed by ClickHouse's UInt8 boolean convention round-trips through Repo.insert!/Repo.all" do
-    # `Ecto.Adapters.ClickHouse.Connection.encode_literal/1` already writes
+    # `Ecto.Adapters.ClickHouse.Connection.encode_literal/1` writes
     # `true`/`false` as the SQL literals `1`/`0` (ClickHouse has no native
-    # boolean wire type; `UInt8` is the idiomatic encoding), so the insert
-    # side of this has always worked -- it's reading `true`/`false` back out
-    # that used to fail (clickhouse_adapter_elixir-8a2.18): ClickHouse hands
-    # back the raw integer `0`/`1` for a `UInt8` column, and
-    # `Ecto.Adapters.ClickHouse.loaders/2` now coerces that into `false`/
-    # `true` before Ecto's built-in `:boolean` type loader runs (the same
-    # pattern MyXQL uses for MySQL's TINYINT-backed booleans).
+    # boolean wire type; `UInt8` is the idiomatic encoding). On the way
+    # back out, ClickHouse hands back the raw integer `0`/`1` for a
+    # `UInt8` column, and `Ecto.Adapters.ClickHouse.loaders/2` coerces
+    # that into `false`/`true` before Ecto's built-in `:boolean` type
+    # loader runs (the same pattern MyXQL uses for MySQL's TINYINT-backed
+    # booleans).
     TestRepo.insert!(%BoolMeasurement{id: 1, active: true})
     TestRepo.insert!(%BoolMeasurement{id: 2, active: false})
 
@@ -329,7 +323,7 @@ defmodule Ecto.Adapters.ClickHouse.RepoAdvancedIntegrationTest do
     # `DateTime64`/microsecond storage involved here. A `NaiveDateTime` with
     # microseconds would silently lose them on the way into ClickHouse (the
     # inline SQL literal ClickHouse parses only has second resolution), so
-    # this test deliberately picks a timestamp with `microsecond: {0, 0}` to
+    # this test uses a timestamp with `microsecond: {0, 0}` to
     # keep the round-trip lossless and unambiguous. Using
     # `:naive_datetime_usec` against a plain `DateTime` column would truncate
     # microseconds back to `.000000` on load -- use a `DateTime64(N)` column
@@ -344,7 +338,7 @@ defmodule Ecto.Adapters.ClickHouse.RepoAdvancedIntegrationTest do
   end
 
   test "a :utc_datetime Ecto field backed by a ClickHouse DateTime column round-trips through Repo.insert!/Repo.all" do
-    # Confirms live that ClickHouse's plain `DateTime` is timezone-naive
+    # ClickHouse's plain `DateTime` is timezone-naive
     # storage (a bare Unix-epoch second count, not tagged with any zone) --
     # `NativeBlock.decode_datetime/1` always decodes it as UTC, which is the
     # correct interpretation as long as values are also written as UTC (as

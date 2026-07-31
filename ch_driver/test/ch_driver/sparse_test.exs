@@ -1,9 +1,9 @@
 defmodule ChDriver.SparseTest do
   @moduledoc """
   Live integration coverage for ClickHouse's "sparse" column serialization
-  (clickhouse_adapter_elixir-8a2.20) -- the `has_custom_serialization = 1`
-  wire format `ChDriver.Protocol.NativeBlock.decode_sparse/3` decodes (see
-  its moduledoc for the byte-level format, confirmed against ClickHouse's
+  -- the `has_custom_serialization = 1` wire format
+  `ChDriver.Protocol.NativeBlock.decode_sparse/3` decodes (see its
+  moduledoc for the byte-level format, which matches ClickHouse's
   `SerializationSparse.cpp`).
 
   Unlike every other type this driver decodes, sparse serialization can't

@@ -108,19 +108,14 @@ defmodule ChNative.BlockTest do
     end
   end
 
-  describe "live-captured ClickHouse fixtures" do
-    # Captured live from a real ClickHouse 24.8 server (adapter/docker-compose.yml)
-    # over the native TCP protocol (port 9000) with compression enabled, using a
-    # minimal Hello/Query/Data handshake declaring client revision 54030. These
-    # are the raw bytes of real server-sent LZ4 compressed block envelopes,
-    # captured straight off the socket before any decoding.
+  describe "real ClickHouse fixtures" do
+    # Raw bytes of real server-sent LZ4 compressed block envelopes, captured
+    # from a ClickHouse 24.8 server over the native TCP protocol (port 9000)
+    # straight off the socket before any decoding.
     #
-    # `SELECT number FROM system.numbers LIMIT 5` produced three Data packets:
-    # an empty header block (columns only, 0 rows -- the kind already captured
-    # by a prior task's `SELECT 1` verification), a block actually carrying the
-    # 5 result rows, and an empty trailing block. The row-carrying block is new
-    # coverage: it has different size characteristics (5x UInt64 values) than
-    # anything previously captured or exercised by the synthetic tests above.
+    # `SELECT number FROM system.numbers LIMIT 5` produces three Data packets:
+    # an empty header block (columns only, 0 rows), a block carrying the 5
+    # result rows (5x UInt64 values), and an empty trailing block.
     @numbers_header_block Base.decode16!(
                             "c0a010ad4a7136515da9b8898edcde74822300000018000000f009010002ffffffff" <>
                               "000100066e756d6265720655496e743634",
@@ -140,9 +135,8 @@ defmodule ChNative.BlockTest do
                             )
 
     # `SELECT number, number * 2 AS doubled, toString(number) AS s FROM
-    # system.numbers LIMIT 3` -- a genuinely different real query: multiple
-    # columns of different types (UInt64, UInt64, String) in one block,
-    # captured the same way.
+    # system.numbers LIMIT 3` -- multiple columns of different types
+    # (UInt64, UInt64, String) in one block, captured the same way.
     @multi_column_header_block Base.decode16!(
                                  "94a09e7c394b59c863a1e41be0ddc010823700000030000000f311010002ffffffff" <>
                                    "000300066e756d6265720655496e74363407646f75626c65640f0090017306537472696e67",
@@ -217,11 +211,10 @@ defmodule ChNative.BlockTest do
   end
 
   describe "partial TCP reads (real captured bytes split across two reads)" do
-    # A real DBConnection driver reading off a TCP socket will frequently see
-    # a block's bytes arrive split across multiple `:gen_tcp` reads. This
-    # exercises exactly that using genuine captured bytes (not synthetic
-    # binaries) so the `{:incomplete, n}` contract is proven against a real
-    # server's actual byte layout, not just our own encoder's output.
+    # A DBConnection driver reading off a TCP socket will frequently see a
+    # block's bytes arrive split across multiple `:gen_tcp` reads. This uses
+    # real captured bytes (not synthetic binaries) to exercise the
+    # `{:incomplete, n}` contract against a real server's byte layout.
     @full Base.decode16!(
             "4c3a86a4487f21fb3db44e20df7ed65d823b00000040000000f30a010002ffffffff" <>
               "000105066e756d6265720655496e743634000100130108001302080013030800" <>

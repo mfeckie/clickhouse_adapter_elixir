@@ -1,9 +1,8 @@
 defmodule ChDriver.DecimalTest do
   @moduledoc """
-  Live integration coverage for `Decimal(P, S)` column decoding
-  (clickhouse_adapter_elixir-8a2.19) against a real ClickHouse table,
-  including the fixed-precision `Decimal32(S)`/`Decimal64(S)`/
-  `Decimal128(S)` aliases.
+  Live integration coverage for `Decimal(P, S)` column decoding against a
+  real ClickHouse table, including the fixed-precision
+  `Decimal32(S)`/`Decimal64(S)`/`Decimal128(S)` aliases.
 
   Requires `docker compose up -d` (from `adapter/`) to have been run first.
   """
@@ -74,10 +73,10 @@ defmodule ChDriver.DecimalTest do
 
     # ClickHouse's own `system.columns`/native-protocol type-name reporting
     # normalizes the fixed-precision aliases to their canonical
-    # `Decimal(P, S)` form (confirmed live) -- `parse_decimal/1` still needs
-    # to accept the alias spelling too, since a column *created* via
-    # `Decimal32(...)`/etc could in principle still be reported back that
-    # way by a different ClickHouse version/tool.
+    # `Decimal(P, S)` form -- `parse_decimal/1` still needs to accept the
+    # alias spelling too, since a column *created* via `Decimal32(...)`/etc
+    # could in principle still be reported back that way by a different
+    # ClickHouse version/tool.
     assert columns == [
              {"id", "UInt32"},
              {"d32", "Decimal(9, 2)"},

@@ -1,8 +1,7 @@
 defmodule ChDriver.UUIDTest do
   @moduledoc """
-  Live integration coverage for `UUID` column decoding
-  (clickhouse_adapter_elixir-8a2.19) against a real ClickHouse table --
-  including the wire's confirmed-live "byte-reverse each 8-byte half"
+  Live integration coverage for `UUID` column decoding against a real
+  ClickHouse table, including the wire's "byte-reverse each 8-byte half"
   layout (see `ChDriver.Protocol.NativeBlock.decode_uuid/1`'s moduledoc).
 
   Requires `docker compose up -d` (from `adapter/`) to have been run first.
