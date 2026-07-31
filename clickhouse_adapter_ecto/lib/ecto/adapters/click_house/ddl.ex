@@ -86,6 +86,26 @@ defmodule Ecto.Adapters.ClickHouse.DDL do
           SELECT id, payload FROM events_queue
           \"\"\")
 
+      Hand-quoting that `SETTINGS` clause is tedious and error-prone once
+      it has several key/value pairs -- build it with
+      `Ecto.Adapters.ClickHouse.Migration.table_options/1` instead, which
+      also supports pulling values like `kafka_broker_list` from the
+      environment at migration-run time via `{:system, "ENV_VAR"}` rather
+      than committing them as a literal string:
+
+          execute(\"\"\"
+          CREATE TABLE events_queue (id UInt64, payload String)
+          \#{Ecto.Adapters.ClickHouse.Migration.table_options(
+            engine: "Kafka",
+            settings: [
+              kafka_broker_list: {:system, "KAFKA_BROKER_LIST"},
+              kafka_topic_list: "events",
+              kafka_group_name: "events_consumer",
+              kafka_format: "JSONEachRow"
+            ]
+          )}
+          \"\"\")
+
       Only the explicit `... TO target_table AS SELECT ...` view form is
       supported; the implicit-target-table form
       (`ENGINE = ... AS SELECT ...`) creates a hidden backing table with a
