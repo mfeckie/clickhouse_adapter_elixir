@@ -7,18 +7,27 @@ defmodule Ecto.Adapters.ClickHouse.Connection do
   SQL is generated the normal Ecto way with `?` placeholders (see
   `expr/3`, `insert/8`), matching every other `Ecto.Adapters.SQL.Connection`
   implementation. Rather than inlining the corresponding runtime values as
-  SQL literals, `bind_params/2` rewrites each `?` into a ClickHouse native
-  `{pN:Type}` parameter placeholder and sends the actual value alongside
-  the query through `ChDriver`'s query-parameters wire mechanism (see
-  `ChDriver.Protocol.encode_query/2`) -- the value's bytes never pass
-  through the SQL text at all, so there's nothing to escape and no `?`
-  inside a string literal or raw fragment can be mistaken for a bind
-  placeholder (`bind_params/2` tracks quoted regions while scanning).
+  SQL literals, `%ChDriver.Query{}`'s `DBConnection.Query` implementation
+  (see `ch_driver/lib/ch_driver/query.ex`) rewrites each `?` into a
+  ClickHouse native `{pN:Type}` parameter placeholder and sends the actual
+  value alongside the query through `ChDriver`'s query-parameters wire
+  mechanism (see `ChDriver.Protocol.encode_query/2`) -- the value's bytes
+  never pass through the SQL text at all, so there's nothing to escape and
+  no `?` inside a string literal or raw fragment can be mistaken for a
+  bind placeholder (the one-time lexer this drives, `ChDriver.Query.
+  lex_placeholders/1`, tracks quoted regions while scanning).
 
   ClickHouse's parameter mechanism has no type-independent way to express
   NULL (see `ChDriver.Params.text/1`), so a `nil` value is the one
   exception: it's inlined directly as the literal `NULL` token, which
   carries no injection risk since it's a fixed constant.
+
+  This module itself no longer does any of that lexing/binding -- it just
+  builds a `%ChDriver.Query{statement: sql}` and lets `DBConnection`'s
+  normal parse/encode/execute flow (driven by `Ecto.Adapters.SQL`'s own
+  query cache) do it, once per distinct prepared query shape rather than
+  on every execute. See `ChDriver.Query`'s moduledoc for the full
+  rationale.
   """
 
   @behaviour Ecto.Adapters.SQL.Connection
@@ -37,20 +46,27 @@ defmodule Ecto.Adapters.ClickHouse.Connection do
   @impl true
   def prepare_execute(conn, _name, sql, params, opts) do
     statement = IO.iodata_to_binary(sql)
-    {final_sql, wire_params} = bind_params(statement, params)
 
-    case ChDriver.query(conn, final_sql, wire_params, opts) do
-      {:ok, result} -> {:ok, %ChDriver.Query{statement: statement}, to_sql_result(result)}
+    # A fresh, never-parsed query struct -- `DBConnection.prepare_execute/4`
+    # runs it through `DBConnection.Query.parse/2` (the one-time `?` lexer),
+    # then `encode/3`, then `handle_execute/4`. The returned, now-parsed
+    # struct is what `Ecto.Adapters.SQL`'s query cache holds onto and later
+    # passes back into `execute/4` below -- that's what skips re-parsing on
+    # every subsequent execution of the same prepared query.
+    case DBConnection.prepare_execute(conn, %ChDriver.Query{statement: statement}, params, opts) do
+      {:ok, query, result} -> {:ok, query, to_sql_result(result)}
       {:error, _} = error -> error
     end
   end
 
   @impl true
-  def execute(conn, %ChDriver.Query{statement: statement}, params, opts) do
-    {final_sql, wire_params} = bind_params(statement, params)
-
-    case ChDriver.query(conn, final_sql, wire_params, opts) do
-      {:ok, result} -> {:ok, to_sql_result(result)}
+  def execute(conn, %ChDriver.Query{} = query, params, opts) do
+    # `query` here is the already-parsed struct `prepare_execute/5` (or a
+    # previous `execute/4`) returned -- `DBConnection.execute/4` only runs
+    # `encode/3` (using its cached `param_names`) and `handle_execute/4`,
+    # not `parse/2` again.
+    case DBConnection.execute(conn, query, params, opts) do
+      {:ok, _query, result} -> {:ok, to_sql_result(result)}
       {:error, _} = error -> error
     end
   end
@@ -61,10 +77,13 @@ defmodule Ecto.Adapters.ClickHouse.Connection do
 
   @impl true
   def query(conn, statement, params, opts) do
-    {final_sql, wire_params} = bind_params(IO.iodata_to_binary(statement), params)
+    statement = IO.iodata_to_binary(statement)
 
-    case ChDriver.query(conn, final_sql, wire_params, opts) do
-      {:ok, result} -> {:ok, to_sql_result(result)}
+    # No cache to reuse a parsed struct from (mirrors `:nocache` semantics),
+    # so this always goes through the full parse/encode/execute path, same
+    # as `prepare_execute/5` above.
+    case DBConnection.prepare_execute(conn, %ChDriver.Query{statement: statement}, params, opts) do
+      {:ok, _query, result} -> {:ok, to_sql_result(result)}
       {:error, _} = error -> error
     end
   end
@@ -93,86 +112,6 @@ defmodule Ecto.Adapters.ClickHouse.Connection do
   defp to_sql_result(%ChDriver.Result{columns: columns, rows: rows, num_rows: num_rows}) do
     %{columns: Enum.map(columns, fn {name, _type} -> name end), rows: rows, num_rows: num_rows}
   end
-
-  ## Parameter binding
-
-  @doc false
-  def bind_params(sql, params) do
-    chunks = scan_placeholders(sql)
-    placeholder_count = Enum.count(chunks, &(&1 == :placeholder))
-
-    if placeholder_count != length(params) do
-      raise ArgumentError,
-            "expected #{placeholder_count} params in statement #{inspect(sql)}, got " <>
-              "#{length(params)}"
-    end
-
-    {sql_iodata, wire_params} = do_bind(chunks, params, [], [], 0)
-    {IO.iodata_to_binary(sql_iodata), wire_params}
-  end
-
-  defp do_bind([], [], sql_acc, wire_acc, _ix) do
-    {Enum.reverse(sql_acc), Enum.reverse(wire_acc)}
-  end
-
-  defp do_bind([text | rest], params, sql_acc, wire_acc, ix) when is_binary(text) do
-    do_bind(rest, params, [text | sql_acc], wire_acc, ix)
-  end
-
-  defp do_bind([:placeholder | rest], [nil | params_rest], sql_acc, wire_acc, ix) do
-    do_bind(rest, params_rest, ["NULL" | sql_acc], wire_acc, ix + 1)
-  end
-
-  defp do_bind([:placeholder | rest], [value | params_rest], sql_acc, wire_acc, ix) do
-    name = "p#{ix}"
-    {type, raw_text, rounds} = ChDriver.Params.encode(value)
-    placeholder = ["{", name, ":", type, "}"]
-    wire_param = {name, raw_text, rounds}
-    do_bind(rest, params_rest, [placeholder | sql_acc], [wire_param | wire_acc], ix + 1)
-  end
-
-  # Scans `sql` for `?` placeholders, tracking single/double-quoted regions
-  # so a literal `?` inside a string literal or quoted identifier (e.g. a
-  # raw fragment's own text, or a `LIKE` pattern written directly in the
-  # query) is never mistaken for a bind position. Returns an alternating
-  # list of text chunks (binaries) and `:placeholder` markers.
-  defp scan_placeholders(sql) when is_binary(sql), do: scan_placeholders(sql, [], <<>>)
-
-  defp scan_placeholders(<<>>, acc, buf), do: Enum.reverse([buf | acc])
-
-  defp scan_placeholders(<<"?", rest::binary>>, acc, buf) do
-    scan_placeholders(rest, [:placeholder, buf | acc], <<>>)
-  end
-
-  defp scan_placeholders(<<"'", rest::binary>>, acc, buf) do
-    {quoted, rest} = consume_quoted(rest, ?', <<"'">>)
-    scan_placeholders(rest, acc, <<buf::binary, quoted::binary>>)
-  end
-
-  defp scan_placeholders(<<"\"", rest::binary>>, acc, buf) do
-    {quoted, rest} = consume_quoted(rest, ?", <<"\"">>)
-    scan_placeholders(rest, acc, <<buf::binary, quoted::binary>>)
-  end
-
-  defp scan_placeholders(<<byte, rest::binary>>, acc, buf) do
-    scan_placeholders(rest, acc, <<buf::binary, byte>>)
-  end
-
-  # `q` is the terminating quote byte (`?'` or `?"`); backslash-escapes are
-  # honored the same way ClickHouse itself parses them (see
-  # `ChDriver.Params.quote_param_value/2`) so an escaped quote never ends
-  # the region early.
-  defp consume_quoted(<<"\\", c, rest::binary>>, q, acc) do
-    consume_quoted(rest, q, <<acc::binary, "\\", c>>)
-  end
-
-  defp consume_quoted(<<c, rest::binary>>, q, acc) when c == q, do: {<<acc::binary, c>>, rest}
-
-  defp consume_quoted(<<c, rest::binary>>, q, acc) do
-    consume_quoted(rest, q, <<acc::binary, c>>)
-  end
-
-  defp consume_quoted(<<>>, _q, acc), do: {acc, <<>>}
 
   ## Query generation
   ##

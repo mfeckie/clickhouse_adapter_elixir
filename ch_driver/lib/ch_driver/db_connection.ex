@@ -6,14 +6,18 @@ defmodule ChDriver.DBConnection do
 
   ClickHouse's native TCP protocol is a plain, unpipelined request/response
   protocol -- one query in flight per socket at a time -- so this module is
-  a thin adapter: `handle_execute/4` calls `ChDriver.Connection.query/2,3`
-  and translates its `{:ok, %{columns:, rows:}}` / `{:error, term}` shape
-  into DBConnection's `{:ok, query, result, state}` /
-  `{:error | :disconnect, exception, state}` contract. `params` is a list
-  of `{name, raw_text}` or `{name, raw_text, escape_rounds}` tuples (see
-  `ChDriver.Protocol.param_text/1`/`escape_rounds/1`) binding the query's
-  `{name:Type}` placeholders via ClickHouse's native query-parameters
-  mechanism -- see `ChDriver.Protocol.encode_query/2`.
+  a thin adapter: `handle_execute/4` receives `query` (a `%ChDriver.Query{}`
+  already lexed once by `DBConnection.Query.parse/2`) and `encoded_params`
+  (this call's values, already run through `DBConnection.Query.encode/3`),
+  splices them together into the final wire statement + `{name, raw_text,
+  escape_rounds}` params via `ChDriver.Query.to_wire/2`, calls
+  `ChDriver.Connection.query/2,3`, and translates its
+  `{:ok, %{columns:, rows:}}` / `{:error, term}` shape into DBConnection's
+  `{:ok, query, result, state}` / `{:error | :disconnect, exception, state}`
+  contract -- `result` here is the raw `{columns, rows}` map;
+  `DBConnection.Query.decode/3` (in `ch_driver/lib/ch_driver/query.ex`) is
+  what turns it into a `%ChDriver.Result{}`, so it can honor
+  `opts[:decode_mapper]`.
 
   Socket-level failures (`:gen_tcp` errors such as `:closed`/`:timeout`)
   are treated as `:disconnect` so the pool tears down and reconnects the
@@ -73,12 +77,12 @@ defmodule ChDriver.DBConnection do
   end
 
   @impl true
-  def handle_execute(%Query{statement: statement} = query, params, opts, state) do
-    opts = Keyword.put(opts, :params, params)
+  def handle_execute(%Query{} = query, encoded_params, opts, state) do
+    {statement, wire_params} = Query.to_wire(query, encoded_params)
+    opts = Keyword.put(opts, :params, wire_params)
 
     case Connection.query(state, statement, opts) do
-      {:ok, %{columns: columns, rows: rows}} ->
-        result = %Result{columns: columns, rows: rows, num_rows: length(rows)}
+      {:ok, %{columns: _columns, rows: _rows} = result} ->
         {:ok, query, result, state}
 
       {:error, %ChDriver.Error{} = error} ->

@@ -1,9 +1,97 @@
 defmodule ChDriver.DBConnectionTest do
   use ExUnit.Case, async: false
 
+  alias ChDriver.Query
   alias ChDriver.Result
 
   @moduletag :integration
+
+  describe "DBConnection.Query parse/2, encode/3, decode/3 (ChDriver.Query)" do
+    test "parse/2 lexes ? placeholders and raises if called again on the parsed query" do
+      query = %Query{statement: "SELECT ? AS n, ? AS m"}
+
+      parsed = DBConnection.Query.parse(query, [])
+
+      assert parsed.param_names == ["p0", "p1"]
+      assert parsed.param_types == [nil, nil]
+      assert is_list(parsed.segments)
+
+      assert_raise ArgumentError, ~r/already been prepared/, fn ->
+        DBConnection.Query.parse(parsed, [])
+      end
+    end
+
+    test "encode/3 raises on an unparsed query" do
+      assert_raise ArgumentError, ~r/has not been prepared/, fn ->
+        DBConnection.Query.encode(%Query{statement: "SELECT ?"}, [1], [])
+      end
+    end
+
+    test "encode/3 raises ArgumentError on a params-count mismatch against param_names" do
+      parsed = DBConnection.Query.parse(%Query{statement: "SELECT ?, ?"}, [])
+
+      assert_raise ArgumentError, ~r/parameters must be of length 2/, fn ->
+        DBConnection.Query.encode(parsed, [1], [])
+      end
+    end
+
+    test "decode/3 honors opts[:decode_mapper]" do
+      result = %{columns: [{"n", "UInt8"}], rows: [[1], [2], [3]]}
+
+      assert %Result{rows: [2, 4, 6]} =
+               DBConnection.Query.decode(%Query{}, result, decode_mapper: fn [n] -> n * 2 end)
+
+      assert %Result{rows: [[1], [2], [3]]} = DBConnection.Query.decode(%Query{}, result, [])
+    end
+  end
+
+  describe "a prepared query's placeholder lexing runs once, against a live ClickHouse server" do
+    setup do
+      {:ok, pool} = ChDriver.start_link(pool_size: 1)
+      %{pool: pool}
+    end
+
+    test "a prepared-then-executed-twice query only lexes its placeholders once", %{pool: pool} do
+      assert {:ok, query, %Result{rows: [[1]]}} =
+               DBConnection.prepare_execute(pool, %Query{statement: "SELECT ? AS n"}, [1])
+
+      assert query.param_names == ["p0"]
+      segments = query.segments
+
+      # `DBConnection.execute/4` (unlike `DBConnection.prepare_execute/4`)
+      # never calls `DBConnection.Query.parse/2` -- only `encode/3` and
+      # `handle_execute/4`. `parse/2` raises on an already-parsed query
+      # (proven in the describe block above), so these two calls
+      # succeeding at all -- reusing the very same `query` struct
+      # `prepare_execute/4` returned -- is direct proof the expensive
+      # quote-aware lexer in `parse/2` didn't run again for either of
+      # them.
+      assert {:ok, ^query, %Result{rows: [[2]]}} = DBConnection.execute(pool, query, [2])
+      assert {:ok, ^query, %Result{rows: [[3]]}} = DBConnection.execute(pool, query, [3])
+
+      # The cached struct's lexed segments are untouched across those
+      # executions.
+      assert query.segments == segments
+
+      # Belt-and-suspenders: confirm this exact struct really is in the
+      # "already parsed" state that `parse/2` raises on.
+      assert_raise ArgumentError, ~r/already been prepared/, fn ->
+        DBConnection.Query.parse(query, [])
+      end
+    end
+
+    test "opts[:decode_mapper] is honored end-to-end through the pool", %{pool: pool} do
+      assert {:ok, %Result{rows: rows}} =
+               ChDriver.query(
+                 pool,
+                 "SELECT number FROM system.numbers LIMIT 3",
+                 [],
+                 decode_mapper: fn [n] -> n * 10 end
+               )
+
+      assert rows == [0, 10, 20]
+    end
+  end
 
   describe "a real DBConnection pool against a live ClickHouse server" do
     setup do

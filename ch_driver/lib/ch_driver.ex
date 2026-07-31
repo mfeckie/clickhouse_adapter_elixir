@@ -49,7 +49,13 @@ defmodule ChDriver do
   @spec query(DBConnection.conn(), binary, list, keyword) ::
           {:ok, ChDriver.Result.t()} | {:error, Exception.t()}
   def query(conn, statement, params \\ [], opts \\ []) do
-    case DBConnection.execute(conn, %Query{statement: statement}, params, opts) do
+    # Always a freshly-built, never-parsed `%Query{}` (there is no cache
+    # here to reuse an already-parsed struct across calls), so this must
+    # go through `DBConnection.prepare_execute/4` (parse -> encode ->
+    # execute), not `DBConnection.execute/4` (encode -> execute only,
+    # which requires an already-parsed query -- see `ChDriver.Query`'s
+    # moduledoc).
+    case DBConnection.prepare_execute(conn, %Query{statement: statement}, params, opts) do
       {:ok, _query, result} -> {:ok, result}
       {:error, _} = error -> error
     end
