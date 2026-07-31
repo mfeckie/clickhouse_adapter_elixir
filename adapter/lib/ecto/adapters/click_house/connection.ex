@@ -1081,13 +1081,3 @@ defmodule Ecto.Adapters.ClickHouse.Connection do
   defp error!(query, message), do: raise(Ecto.QueryError, query: query, message: message)
 end
 
-defimpl String.Chars, for: ChDriver.Query do
-  @moduledoc false
-  # `Ecto.Adapters.SQL.log/5` calls `to_string/1` on the cached query when
-  # emitting `[:ecto_adapter, :query]` telemetry log entries; without this
-  # `ChDriver.Query` has no `String.Chars` implementation and every
-  # successful query raises (harmlessly, but noisily -- the query itself
-  # already succeeded by the time logging runs) a `Protocol.UndefinedError`
-  # from inside the logging callback.
-  def to_string(%ChDriver.Query{statement: statement}), do: statement
-end

@@ -29,3 +29,15 @@ defimpl DBConnection.Query, for: ChDriver.Query do
   def encode(_query, params, _opts), do: params
   def decode(_query, result, _opts), do: result
 end
+
+defimpl String.Chars, for: ChDriver.Query do
+  @moduledoc false
+  # Callers that log or interpolate a query need this -- e.g.
+  # `Ecto.Adapters.SQL.log/5` calls `to_string/1` on the cached query when
+  # emitting `[:ecto_adapter, :query]` telemetry log entries; without this
+  # `ChDriver.Query` has no `String.Chars` implementation and every
+  # successful query raises (harmlessly, but noisily -- the query itself
+  # already succeeded by the time logging runs) a `Protocol.UndefinedError`
+  # from inside the logging callback.
+  def to_string(%ChDriver.Query{statement: statement}), do: statement
+end
