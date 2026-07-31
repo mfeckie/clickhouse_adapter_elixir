@@ -18,19 +18,17 @@ defmodule Ecto.Adapters.ClickHouse.QueryBuilder do
     select = Expression.select(query, sources)
     join = Expression.join(query, sources)
     where = Expression.where(query, sources)
+    group_by = Expression.group_by(query, sources)
+    having = Expression.having(query, sources)
     order_by = Expression.order_by(query, sources)
     limit = Expression.limit(query, sources)
     offset = Expression.offset(query, sources)
-
-    unless query.group_bys == [] and query.havings == [] do
-      Naming.error!(query, "the ClickHouse adapter does not support GROUP BY/HAVING yet")
-    end
 
     unless query.windows == [] and query.combinations == [] do
       Naming.error!(query, "the ClickHouse adapter does not support windows/set operations yet")
     end
 
-    [select, from, join, where, order_by, limit, offset]
+    [select, from, join, where, group_by, having, order_by, limit, offset]
   end
 
   @doc false

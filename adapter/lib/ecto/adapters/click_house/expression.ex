@@ -123,6 +123,47 @@ defmodule Ecto.Adapters.ClickHouse.Expression do
     boolean(" WHERE ", wheres, sources, query)
   end
 
+  ## `GROUP BY` -- one or more grouping columns/expressions, comma-separated.
+  ## Structurally the same shape `order_by/2` already handles (a
+  ## `%Ecto.Query.ByExpr{}` per `group_by(...)` call, each wrapping a list of
+  ## expressions), minus the `{direction, expr}` wrapper `ORDER BY` has --
+  ## `group_by/3` has no notion of ascending/descending, so each element of
+  ## `expr` is rendered directly through the shared `expr/3` renderer.
+  ##
+  ## Explicitly out of scope (raise instead of silently mishandling):
+  ##
+  ##   * SQL-standard `GROUPING SETS`/`ROLLUP`/`CUBE` -- Ecto's `group_by/3`
+  ##     doesn't expose a way to express these at all, so there is nothing
+  ##     for this function to reject; they simply can't reach it.
+  ##   * ClickHouse's own `GROUP BY ... WITH TOTALS`/`WITH ROLLUP`/`WITH CUBE`
+  ##     modifiers -- same story, no `Ecto.Query` construct maps to them, and
+  ##     nothing here tries to synthesize ClickHouse-specific syntax that
+  ##     Ecto's query API doesn't ask for.
+  @doc false
+  def group_by(%{group_bys: []}, _sources), do: []
+
+  def group_by(%{group_bys: group_bys} = query, sources) do
+    [
+      " GROUP BY "
+      | Enum.map_intersperse(group_bys, ", ", fn %ByExpr{expr: expr} ->
+          Enum.map_intersperse(expr, ", ", &expr(&1, sources, query))
+        end)
+    ]
+  end
+
+  ## `HAVING` -- a boolean condition over the grouped/aggregated result,
+  ## rendered with exactly the same `boolean/4` clause-composition machinery
+  ## `where/2` already uses: `HAVING`'s condition is the same kind of
+  ## `%Ecto.Query.BooleanExpr{}` tree `WHERE` gets, just evaluated after
+  ## `GROUP BY` instead of before it, so there is no ClickHouse-specific
+  ## dialect difference to account for here.
+  @doc false
+  def having(%{havings: []}, _sources), do: []
+
+  def having(%{havings: havings} = query, sources) do
+    boolean(" HAVING ", havings, sources, query)
+  end
+
   @doc false
   def order_by(%{order_bys: []}, _sources), do: []
 
@@ -254,6 +295,34 @@ defmodule Ecto.Adapters.ClickHouse.Expression do
   end
 
   def expr({:count, _, []}, _sources, _query), do: "count(*)"
+
+  # `count(field, :distinct)` -- the arity-2 form of `Ecto.Query.API.count/2`
+  # -- doesn't map onto the generic `{fun, _, args}` function-call clause
+  # below: that clause would try to render `:distinct` itself through
+  # `expr/3` as if it were a fourth SQL argument (`count(field, :distinct)`
+  # literally, or worse, an "unsupported expression" error for the bare
+  # atom), instead of the `count(DISTINCT field)` syntax it actually means.
+  # `sum`/`avg`/`min`/`max`/plain `count(field)` all stay on the generic
+  # clause below unchanged -- they're ordinary single-argument function
+  # calls ClickHouse's function names line up with directly.
+  def expr({:count, _, [field, :distinct]}, sources, query) do
+    ["count(DISTINCT ", expr(field, sources, query), ?)]
+  end
+
+  # `Ecto.Query.API.filter/2` (`FILTER` applied to an aggregate) is
+  # documented by Ecto itself as Postgres-only. Left to the generic
+  # `{fun, _, args}` clause below, `:filter` would be treated as an ordinary
+  # function name and rendered as `filter(agg, cond)`, which is not valid
+  # ClickHouse syntax (Postgres's `agg(...) FILTER (WHERE cond)` is a
+  # different clause shape entirely, not a function call) -- silently wrong
+  # SQL instead of a clear error. Reject it explicitly instead.
+  def expr({:filter, _, [_value, _filter]}, _sources, query) do
+    Naming.error!(
+      query,
+      "the ClickHouse adapter does not support filter/2 -- Ecto documents FILTER-on-aggregate " <>
+        "as Postgres-only, and it has no ClickHouse equivalent this adapter renders"
+    )
+  end
 
   def expr({fun, _, args}, sources, query) when is_atom(fun) and is_list(args) do
     case handle_call(fun, length(args)) do
