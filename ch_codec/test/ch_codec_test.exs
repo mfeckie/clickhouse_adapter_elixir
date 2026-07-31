@@ -22,13 +22,10 @@ defmodule ChCodecTest do
 
   describe "cityhash128/1" do
     # Cross-checked against cityhash-rs's port of Google's official CityHash
-    # v1.0.2 test suite (empty input, row 0: expected[3]/expected[4]) -- v1.0.2
-    # is the version ClickHouse itself vendors for wire checksums, and the one
-    # `cityhash128/1` calls (see native/chcodec_native/src/lib.rs). The bytes
-    # here happen to also match v1.0.3's empty-input vector (a coincidence of
-    # the seed constants for zero-length input -- v1.0.2 and v1.0.3 diverge
-    # for inputs over ~64 bytes), then repacked into ClickHouse's on-wire byte
-    # order (first/second as little-endian halves).
+    # v1.0.2 test suite (empty input, row 0: expected[3]/expected[4]), then
+    # repacked into ClickHouse's on-wire byte order. See the `cityhash128/1`
+    # NIF binding in native/chcodec_native/src/lib.rs for why v1.0.2
+    # specifically, and its divergence from v1.0.3 above ~64 bytes.
     test "matches the known CityHash v1.0.2 test vector for empty input" do
       expected =
         <<0x2B, 0x9A, 0xC0, 0x64, 0xFC, 0x9D, 0xF0, 0x3D, 0x29, 0x1E, 0xE5, 0x92, 0xC3, 0x40,

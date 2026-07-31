@@ -5,17 +5,10 @@ defmodule ChDriver.CompressionTest do
 
   @moduletag :integration
 
-  # Formerly blocked by `clickhouse_adapter_elixir-g8o`: `ChCodec.cityhash128/1`
-  # (ch_codec/native/chcodec_native/src/lib.rs) called
-  # `cityhash_rs::cityhash_103_128` (CityHash v1.0.3), but ClickHouse's wire
-  # checksum for compressed blocks is computed with its own vendored
-  # **v1.0.2** CityHash -- a different algorithm, not just a different byte
-  # order. The two happen to agree for short inputs and diverge once the
-  # input exceeds ~64 bytes, so `ChNative.Block.decode/1`'s checksum check
-  # passed for tiny blocks by coincidence and failed with
-  # `{:error, :checksum_mismatch}` for any real result set. Fixed by switching
-  # the NIF to call `cityhash_rs::cityhash_102_128` instead; the two
-  # previously-skipped tests below are unskipped now that g8o has landed.
+  # Formerly blocked on a CityHash version mismatch in `ChCodec.cityhash128/1`
+  # (see the NIF binding in ch_codec/native/chcodec_native/src/lib.rs for the
+  # v1.0.2-vs-v1.0.3 story) -- now fixed, so the two previously-skipped tests
+  # below are unskipped.
 
   describe "compression: :lz4 against a live ClickHouse server" do
     setup do
@@ -141,16 +134,13 @@ defmodule ChDriver.CompressionTest do
     end
   end
 
-  describe "regression coverage for the ch_codec cityhash bug (clickhouse_adapter_elixir-g8o)" do
+  describe "regression coverage for the ch_codec cityhash bug" do
     test "a real compressed block's checksum verifies correctly, and LZ4 decompresses it" do
       # Captures one real compressed Data block (100 rows, well past the
-      # ~64-byte coincidence threshold below which CityHash v1.0.2 and v1.0.3
-      # happen to agree) from a live server. Before the g8o fix,
-      # `ChCodec.cityhash128/1` called CityHash v1.0.3 instead of the v1.0.2
-      # ClickHouse itself uses for wire checksums, so the checksum comparison
-      # here failed for any block this size even though LZ4 decompression
-      # itself was always fine. This is a regression test for that fix: both
-      # the checksum must now verify AND LZ4 must decompress correctly.
+      # ~64-byte threshold where CityHash v1.0.2/v1.0.3 diverge -- see
+      # ch_codec/native/chcodec_native/src/lib.rs's cityhash128/1 binding).
+      # Regression test: both the checksum must verify AND LZ4 must
+      # decompress correctly.
       assert {:ok, conn} = Connection.connect(compression: :lz4)
       on_exit(fn -> Connection.close(conn.socket) end)
 
