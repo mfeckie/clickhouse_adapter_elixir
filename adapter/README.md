@@ -213,13 +213,56 @@ need anything more.
 
 ### If you need `async: true`
 
-Reach for a per-test-module uniquely-named database instead:
+Two options, in order of how much this repo would reach for them:
+
+**Per-test-module uniquely-named database.** Use
 `Ecto.Adapters.ClickHouse.storage_up/1` (`CREATE DATABASE`) in `setup_all`,
 run your migrations against it, `storage_down/1` (`DROP DATABASE`) in
 `on_exit`. Fully isolated, safe to run concurrent test modules against, at
 the cost of a `CREATE DATABASE` + migration run + `DROP DATABASE` per test
 *module* rather than a cheap `TRUNCATE` per *test* -- worth it once a
 suite is large enough for `async: true` to matter, not before.
+
+**Per-connection `CREATE TEMPORARY TABLE` shadowing**
+(`Ecto.Adapters.ClickHouse.ConcurrentTestCase`,
+`test/support/concurrent_test_case.ex`) -- a follow-up investigation
+(`clickhouse_adapter_elixir-v7v`) confirmed, empirically against this
+repo's pinned `clickhouse/clickhouse-server:24.8`, that:
+
+* an unqualified `SELECT`/`DROP TABLE` on a connection that has run `CREATE
+  TEMPORARY TABLE widgets (...)` resolves to the *temporary* table, never
+  the permanent one of the same name, even with both present at once and
+  other connections seeing only the permanent table's data throughout;
+* `CREATE TEMPORARY TABLE` is **not** `Memory`-engine-only -- `MergeTree`,
+  `ReplacingMergeTree`, `Log`, and `TinyLog` were all tested directly and
+  work, so a shadow can use the same engine as the real table;
+* the temp table is genuinely gone (no leak) once the owning TCP connection
+  closes, with the permanent table untouched;
+* `DBConnection.Ownership` (a plain connection-coordination pool module,
+  unrelated to and not requiring any transaction support) can pin one
+  physical pooled connection to one test process for a bounded duration,
+  independent of `Ecto.Adapters.SQL.Sandbox`.
+
+This lets `setup_clickhouse_shadow_tables/3` give each `async: true` test
+its own connection with a temp-table shadow of every table it declares,
+transparently hit by Ecto's normal unqualified-generated SQL, cleaned up
+automatically when the connection returns to the pool for reuse by the
+next test. See `Ecto.Adapters.ClickHouse.ConcurrentTestCase`'s moduledoc
+for the full empirical write-up, usage example, and tradeoffs -- in
+particular: `pool_size` must be >= the number of concurrently-running test
+processes (same constraint Sandbox has for Postgres/MySQL), and the
+`Ownership` pool's `:manual` mode means a bare `spawn/1`'d process (unlike
+`Task.async/1`, which sets `$callers` automatically) needs an explicit
+`DBConnection.Ownership.ownership_allow/3` to use the checked-out
+connection. `test/integration/group_by_concurrent_test.exs` is a worked
+proof-of-concept converted from the TRUNCATE-based
+`group_by_test.exs`, running `async: true` alongside the rest of this
+repo's (`async: false`) suite.
+
+This module is additive -- it does not replace `TestCase` above, which
+remains the simpler default recommendation, especially for suites that
+don't need `async: true` badly enough to take on Ownership/pool-sizing
+bookkeeping.
 
 ## Repo layout
 
