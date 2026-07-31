@@ -81,14 +81,10 @@ defmodule ChDriver.Types.Registry do
   def column_codec("IPv4"), do: {:fixed, 4, &decode_ipv4/1}
   def column_codec("IPv6"), do: {:fixed, 16, &decode_ipv6/1}
 
-  def column_codec(type) do
-    cond do
-      String.starts_with?(type, "DateTime(") -> {:fixed, 4, &decode_datetime/1}
-      String.starts_with?(type, "Enum8(") -> {:fixed, 1, fn <<v::signed-little-8>> -> v end}
-      String.starts_with?(type, "Enum16(") -> {:fixed, 2, fn <<v::signed-little-16>> -> v end}
-      true -> :unsupported
-    end
-  end
+  def column_codec("DateTime(" <> _), do: {:fixed, 4, &decode_datetime/1}
+  def column_codec("Enum8(" <> _), do: {:fixed, 1, fn <<v::signed-little-8>> -> v end}
+  def column_codec("Enum16(" <> _), do: {:fixed, 2, fn <<v::signed-little-16>> -> v end}
+  def column_codec(_), do: :unsupported
 
   # ClickHouse's plain `DateTime` (and `DateTime(timezone)`, whose wire
   # encoding is identical -- the parameter only affects display/parsing

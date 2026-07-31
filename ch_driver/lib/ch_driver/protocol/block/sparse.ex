@@ -190,12 +190,8 @@ defmodule ChDriver.Protocol.Block.Sparse do
   defp scalar_default_value("IPv6"), do: {:ok, "::"}
   defp scalar_default_value("DateTime"), do: {:ok, DateTime.from_unix!(0, :second)}
 
-  defp scalar_default_value(type) do
-    cond do
-      String.starts_with?(type, "DateTime(") -> {:ok, DateTime.from_unix!(0, :second)}
-      String.starts_with?(type, "Enum8(") -> {:ok, 0}
-      String.starts_with?(type, "Enum16(") -> {:ok, 0}
-      true -> :error
-    end
-  end
+  defp scalar_default_value("DateTime(" <> _), do: {:ok, DateTime.from_unix!(0, :second)}
+  defp scalar_default_value("Enum8(" <> _), do: {:ok, 0}
+  defp scalar_default_value("Enum16(" <> _), do: {:ok, 0}
+  defp scalar_default_value(_), do: :error
 end
