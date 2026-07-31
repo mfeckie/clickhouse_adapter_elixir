@@ -15,7 +15,7 @@ defmodule Ecto.Adapters.ClickHouse.KafkaIngestionTest do
   use ExUnit.Case, async: false
 
   @moduletag :integration
-  @moduletag timeout: 90_000
+  @moduletag timeout: 60_000
 
   @kafka_broker "kafka:29092"
 
@@ -24,10 +24,14 @@ defmodule Ecto.Adapters.ClickHouse.KafkaIngestionTest do
   end
 
   setup do
+    # In CI (clickhouse_adapter_ecto_ci.yml) this container is started
+    # directly by GitHub Actions' `services:` block, not by docker-compose,
+    # so it isn't part of any compose project -- found by published port
+    # instead of by name/project.
     kafka_container =
-      case System.cmd("docker", ["compose", "ps", "-q", "kafka"], stderr_to_stdout: true) do
-        {output, 0} -> String.trim(output)
-        {output, status} -> flunk("docker compose ps -q kafka failed (#{status}): #{output}")
+      case System.cmd("docker", ["ps", "-q", "--filter", "publish=9092"], stderr_to_stdout: true) do
+        {output, 0} -> output |> String.split("\n", trim: true) |> List.first("")
+        {output, status} -> flunk("docker ps --filter publish=9092 failed (#{status}): #{output}")
       end
 
     if kafka_container == "" do
@@ -100,34 +104,6 @@ defmodule Ecto.Adapters.ClickHouse.KafkaIngestionTest do
       "--topic",
       topic
     ])
-  end
-
-  # Kafka's own broker-side consumer group record can linger with no active
-  # members until `offsets.retention.minutes` expires it -- that's normal
-  # Kafka behavior, unrelated to whether ClickHouse's side cleanly stopped.
-  # "orphaned" here means what this adapter's migrations can actually
-  # cause: a ClickHouse-side consumer still attached and polling for a
-  # topic/group nothing references anymore. Check for that, not for the
-  # broker-side group record's mere existence.
-  defp consumer_has_active_members?(kafka_container, group) do
-    {output, _status} =
-      System.cmd(
-        "docker",
-        [
-          "exec",
-          kafka_container,
-          "/opt/kafka/bin/kafka-consumer-groups.sh",
-          "--bootstrap-server",
-          "localhost:9092",
-          "--describe",
-          "--group",
-          group
-        ],
-        stderr_to_stdout: true
-      )
-
-    not String.contains?(output, "does not exist") and
-      not String.contains?(output, "has no active members")
   end
 
   defp eventually(fun, attempts \\ 20, sleep_ms \\ 500) do
@@ -239,24 +215,30 @@ defmodule Ecto.Adapters.ClickHouse.KafkaIngestionTest do
       assert rows == [], "expected table #{table} to be dropped after down/0"
     end
 
-    assert {:ok, :ok} =
+    # "orphaned" here means what this adapter's migrations can actually
+    # cause: a ClickHouse-side consumer still attached and polling for a
+    # topic/group nothing references anymore. `is_currently_used` is
+    # ClickHouse's own bookkeeping for that, updated as soon as its consumer
+    # thread stops -- unlike the Kafka broker's own consumer-group-member
+    # record, which can take up to the client's session timeout (tens of
+    # seconds) to reflect a graceful leave, regardless of whether
+    # ClickHouse's side already cleanly stopped.
+    assert {:ok, []} =
              eventually(
                fn ->
-                 if consumer_has_active_members?(kafka_container, group),
-                   do: :error,
-                   else: {:ok, :ok}
+                 {:ok, %{rows: consumer_rows}} =
+                   ChDriver.query(
+                     ddl_conn,
+                     "SELECT is_currently_used FROM system.kafka_consumers WHERE table = 'order_events_queue'"
+                   )
+
+                 if consumer_rows == [] or consumer_rows == [[0]],
+                   do: {:ok, []},
+                   else: :error
                end,
-               60,
-               500
+               10,
+               200
              )
-
-    {:ok, %{rows: consumer_rows}} =
-      ChDriver.query(
-        ddl_conn,
-        "SELECT is_currently_used FROM system.kafka_consumers WHERE table = 'order_events_queue'"
-      )
-
-    assert consumer_rows == [] or consumer_rows == [[0]]
 
     delete_topic(kafka_container, topic)
   end
