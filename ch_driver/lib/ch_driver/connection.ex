@@ -15,6 +15,18 @@ defmodule ChDriver.Connection do
   @default_connect_timeout 5_000
   @default_recv_timeout 5_000
 
+  # Client-side ceiling on how large the accumulated receive buffer is
+  # allowed to grow while waiting for more bytes from the server, mirroring
+  # Postgrex's `@max_packet` (see `postgrex/lib/postgrex/protocol.ex`). A
+  # corrupted/malicious server or a client-side protocol desync can produce
+  # a garbled length-prefix varint (e.g. a column's declared string length,
+  # or a block's declared row/column count) that the decoders below would
+  # otherwise wait on forever, accumulating bytes from every subsequent
+  # `:gen_tcp.recv/3` call into an ever-growing buffer -- only ever bounded
+  # by `recv_timeout`, by which point the process may already hold an
+  # enormous binary. 64MB matches Postgrex's own default.
+  @default_max_buffer_size 64 * 1024 * 1024
+
   @doc """
   Opens a TCP connection to a ClickHouse server and performs the Hello
   handshake.
@@ -28,6 +40,10 @@ defmodule ChDriver.Connection do
     * `:password` - defaults to `""`
     * `:connect_timeout` - TCP connect timeout in ms, defaults to `5_000`
     * `:recv_timeout` - `:gen_tcp.recv/3` timeout in ms, defaults to `5_000`
+    * `:max_buffer_size` - maximum accumulated receive-buffer size in bytes
+      before the handshake fails fast with `{:error, %ChDriver.Error{}}`
+      rather than growing the buffer unbounded, defaults to `#{@default_max_buffer_size}`
+      (64MB, matching Postgrex's `@max_packet`)
 
   Returns `{:ok, %{socket: socket, server_info: %ChDriver.Protocol.ServerHello{}}}`
   on success, or `{:error, reason}` on failure. The caller owns the
@@ -45,12 +61,13 @@ defmodule ChDriver.Connection do
     password = Keyword.get(opts, :password, "")
     connect_timeout = Keyword.get(opts, :connect_timeout, @default_connect_timeout)
     recv_timeout = Keyword.get(opts, :recv_timeout, @default_recv_timeout)
+    max_buffer_size = Keyword.get(opts, :max_buffer_size, @default_max_buffer_size)
 
     tcp_opts = [:binary, packet: :raw, active: false]
 
     case :gen_tcp.connect(hostname, port, tcp_opts, connect_timeout) do
       {:ok, socket} ->
-        do_handshake(socket, database, username, password, recv_timeout)
+        do_handshake(socket, database, username, password, recv_timeout, max_buffer_size)
 
       {:error, reason} ->
         {:error, reason}
@@ -63,11 +80,12 @@ defmodule ChDriver.Connection do
   # success), so nothing else would ever close it otherwise, leaking an open
   # :gen_tcp socket on every partial-handshake failure (bad credentials,
   # unexpected/garbled ServerHello, a mid-handshake network drop, etc).
-  defp do_handshake(socket, database, username, password, recv_timeout) do
+  defp do_handshake(socket, database, username, password, recv_timeout, max_buffer_size) do
     hello = Protocol.client_hello(database, username, password)
 
     with :ok <- :gen_tcp.send(socket, Protocol.encode_client_hello(hello)),
-         {:ok, server_info} <- receive_server_hello(socket, <<>>, recv_timeout),
+         {:ok, server_info} <-
+           receive_server_hello(socket, <<>>, recv_timeout, max_buffer_size),
          :ok <- send_addendum_if_required(socket) do
       {:ok, %{socket: socket, server_info: server_info}}
     else
@@ -103,15 +121,15 @@ defmodule ChDriver.Connection do
     :gen_tcp.close(socket)
   end
 
-  defp receive_server_hello(socket, buffer, timeout) do
+  defp receive_server_hello(socket, buffer, timeout, max_buffer_size) do
     case Protocol.decode_server_hello(buffer) do
       {:ok, server_info, _rest} ->
         {:ok, server_info}
 
       {:incomplete, _} ->
-        case :gen_tcp.recv(socket, 0, timeout) do
-          {:ok, more} -> receive_server_hello(socket, buffer <> more, timeout)
-          {:error, reason} -> {:error, reason}
+        with :ok <- check_buffer_size(buffer, max_buffer_size),
+             {:ok, more} <- :gen_tcp.recv(socket, 0, timeout) do
+          receive_server_hello(socket, buffer <> more, timeout, max_buffer_size)
         end
 
       {:error, reason} ->
@@ -147,6 +165,7 @@ defmodule ChDriver.Connection do
   @spec query(map, binary, keyword) :: {:ok, map} | {:error, term}
   def query(%{socket: socket}, query_string, opts \\ []) do
     recv_timeout = Keyword.get(opts, :recv_timeout, @default_recv_timeout)
+    max_buffer_size = Keyword.get(opts, :max_buffer_size, @default_max_buffer_size)
 
     packet = [
       Protocol.encode_query(query_string, opts),
@@ -154,27 +173,39 @@ defmodule ChDriver.Connection do
     ]
 
     with :ok <- :gen_tcp.send(socket, packet) do
-      receive_query_result(socket, <<>>, recv_timeout, %{columns: nil, rows: []})
+      socket
+      |> receive_query_result(<<>>, recv_timeout, %{columns: nil, rows: []}, max_buffer_size)
+      |> put_statement(query_string)
     end
   end
 
-  defp receive_query_result(socket, buffer, timeout, acc) do
+  # Stamps the originating SQL text onto a `%ChDriver.Error{}` returned from
+  # an Exception packet so callers can correlate the error with the query
+  # that triggered it -- ClickHouse's own exception message doesn't always
+  # quote the failing SQL (e.g. execution-time type-conversion errors).
+  defp put_statement({:error, %ChDriver.Error{} = error}, query_string) do
+    {:error, %{error | statement: query_string}}
+  end
+
+  defp put_statement(result, _query_string), do: result
+
+  defp receive_query_result(socket, buffer, timeout, acc, max_buffer_size) do
     case Protocol.decode_packet(buffer) do
       {:ok, {:data, %{columns: columns, rows: rows}}, rest} ->
         acc = accumulate_data(acc, columns, rows)
-        receive_query_result(socket, rest, timeout, acc)
+        receive_query_result(socket, rest, timeout, acc, max_buffer_size)
 
       {:ok, {:profile_events, _block}, rest} ->
-        receive_query_result(socket, rest, timeout, acc)
+        receive_query_result(socket, rest, timeout, acc, max_buffer_size)
 
       {:ok, {:progress, _progress}, rest} ->
-        receive_query_result(socket, rest, timeout, acc)
+        receive_query_result(socket, rest, timeout, acc, max_buffer_size)
 
       {:ok, {:profile_info, _profile_info}, rest} ->
-        receive_query_result(socket, rest, timeout, acc)
+        receive_query_result(socket, rest, timeout, acc, max_buffer_size)
 
       {:ok, :pong, rest} ->
-        receive_query_result(socket, rest, timeout, acc)
+        receive_query_result(socket, rest, timeout, acc, max_buffer_size)
 
       {:ok, :end_of_stream, _rest} ->
         {:ok, %{columns: acc.columns || [], rows: Enum.reverse(acc.rows)}}
@@ -183,13 +214,40 @@ defmodule ChDriver.Connection do
         {:error, error}
 
       {:incomplete, _} ->
-        case :gen_tcp.recv(socket, 0, timeout) do
-          {:ok, more} -> receive_query_result(socket, buffer <> more, timeout, acc)
-          {:error, reason} -> {:error, reason}
+        with :ok <- check_buffer_size(buffer, max_buffer_size),
+             {:ok, more} <- :gen_tcp.recv(socket, 0, timeout) do
+          receive_query_result(socket, buffer <> more, timeout, acc, max_buffer_size)
         end
 
       {:error, reason} ->
         {:error, reason}
+    end
+  end
+
+  # Guards against unbounded buffer growth: a garbled length-prefix varint
+  # (a column's declared string length, a block's row/column count, ...)
+  # can make a decoder return `:incomplete` forever, since the byte count
+  # it's actually waiting for never arrives. Without this check, the
+  # receive loops above would keep calling `:gen_tcp.recv/3` and
+  # concatenating the result onto `buffer` indefinitely, only ever bounded
+  # by `recv_timeout` -- by which point the process may already hold an
+  # enormous binary. Checked *before* issuing another `recv` so a single
+  # oversized/garbled response already sitting in the socket's receive
+  # buffer fails immediately, without waiting on the network at all.
+  defp check_buffer_size(buffer, max_buffer_size) do
+    size = byte_size(buffer)
+
+    if size > max_buffer_size do
+      {:error,
+       %ChDriver.Error{
+         name: "ChDriver::MaxBufferSizeExceeded",
+         message:
+           "receive buffer grew to #{size} bytes, exceeding the #{max_buffer_size}-byte " <>
+             "max_buffer_size -- failing fast instead of continuing to buffer an " <>
+             "incomplete/corrupted response (see :max_buffer_size option)"
+       }}
+    else
+      :ok
     end
   end
 
@@ -213,13 +271,14 @@ defmodule ChDriver.Connection do
   @spec ping(map, keyword) :: :ok | {:error, term}
   def ping(%{socket: socket}, opts \\ []) do
     recv_timeout = Keyword.get(opts, :recv_timeout, @default_recv_timeout)
+    max_buffer_size = Keyword.get(opts, :max_buffer_size, @default_max_buffer_size)
 
     with :ok <- :gen_tcp.send(socket, Protocol.encode_ping()) do
-      receive_pong(socket, <<>>, recv_timeout)
+      receive_pong(socket, <<>>, recv_timeout, max_buffer_size)
     end
   end
 
-  defp receive_pong(socket, buffer, timeout) do
+  defp receive_pong(socket, buffer, timeout, max_buffer_size) do
     case Protocol.decode_packet(buffer) do
       {:ok, :pong, _rest} ->
         :ok
@@ -228,9 +287,9 @@ defmodule ChDriver.Connection do
         {:error, {:unexpected_ping_response, other}}
 
       {:incomplete, _} ->
-        case :gen_tcp.recv(socket, 0, timeout) do
-          {:ok, more} -> receive_pong(socket, buffer <> more, timeout)
-          {:error, reason} -> {:error, reason}
+        with :ok <- check_buffer_size(buffer, max_buffer_size),
+             {:ok, more} <- :gen_tcp.recv(socket, 0, timeout) do
+          receive_pong(socket, buffer <> more, timeout, max_buffer_size)
         end
 
       {:error, reason} ->

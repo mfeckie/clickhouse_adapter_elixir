@@ -69,6 +69,15 @@ defmodule ChDriver.QueryTest do
       assert {:ok, %{rows: [[3]]}} = Connection.query(conn, "SELECT 3")
     end
 
+    test "a ChDriver.Error carries the original SQL statement that triggered it", %{conn: conn} do
+      statement = "SELECT nonexistent_column FROM system.numbers LIMIT 1"
+
+      assert {:error, %Error{} = error} = Connection.query(conn, statement)
+
+      assert error.statement == statement
+      assert Exception.message(error) =~ "Query: #{statement}"
+    end
+
     test "a query against a nonexistent table returns a ChDriver.Error", %{conn: conn} do
       assert {:error, %Error{} = error} =
                Connection.query(conn, "SELECT * FROM this_table_does_not_exist_at_all")
