@@ -11,7 +11,7 @@ defmodule Ecto.Adapters.ClickHouse.GroupByConcurrentIntegrationTest do
   adapter suite still passes with this file running concurrently alongside
   the rest of the (`async: false`) suite.
 
-  Requires `docker compose up -d` (from `adapter/`) to have been run first.
+  Requires `docker compose up -d` (from `clickhouse_adapter_ecto/`) to have been run first.
   """
 
   use ExUnit.Case, async: true
@@ -20,7 +20,7 @@ defmodule Ecto.Adapters.ClickHouse.GroupByConcurrentIntegrationTest do
   @moduletag :integration
 
   defmodule TestRepo do
-    use Ecto.Repo, otp_app: :clickhouse_adapter_elixir, adapter: Ecto.Adapters.ClickHouse
+    use Ecto.Repo, otp_app: :clickhouse_adapter_ecto, adapter: Ecto.Adapters.ClickHouse
   end
 
   defmodule Post do

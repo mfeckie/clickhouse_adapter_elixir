@@ -22,7 +22,7 @@ defmodule Ecto.Adapters.ClickHouse.StreamIntegrationTest do
   `DBConnection.transaction/3` (what `Repo.transaction/2` uses), which in
   turn requires `handle_begin/2` to succeed. `ChDriver.DBConnection.
   handle_begin/2` is a deliberate, pre-existing, already-documented stub
-  (see its moduledoc, and `adapter/test/support/test_case.ex`'s own
+  (see its moduledoc, and `clickhouse_adapter_ecto/test/support/test_case.ex`'s own
   moduledoc, written *before* this streaming work, independently
   confirming the exact same thing) that returns `{:error, ...}` because
   ClickHouse's native protocol as used by this driver has no session
@@ -51,7 +51,7 @@ defmodule Ecto.Adapters.ClickHouse.StreamIntegrationTest do
   alias ChDriver.Result
 
   defmodule TestRepo do
-    use Ecto.Repo, otp_app: :clickhouse_adapter_elixir, adapter: Ecto.Adapters.ClickHouse
+    use Ecto.Repo, otp_app: :clickhouse_adapter_ecto, adapter: Ecto.Adapters.ClickHouse
   end
 
   defmodule StreamEvent do
@@ -178,7 +178,7 @@ defmodule Ecto.Adapters.ClickHouse.StreamIntegrationTest do
       # `{:error, ...}` -- the failure is at `handle_begin/2` itself
       # (before the given function ever runs), not a rollback triggered
       # from inside it. Confirmed independently in
-      # `adapter/test/support/test_case.ex`'s own moduledoc, written
+      # `clickhouse_adapter_ecto/test/support/test_case.ex`'s own moduledoc, written
       # before this streaming work, for the exact same reason (no
       # session transaction support in `ChDriver.DBConnection`).
       assert_raise DBConnection.ConnectionError,

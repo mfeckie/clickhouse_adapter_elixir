@@ -1,0 +1,51 @@
+name: clickhouse_adapter_ecto release
+
+# Publishes clickhouse_adapter_ecto (Ecto.Adapters.ClickHouse) to Hex.pm when
+# an adapter-v* tag is pushed. Deliberately keeping the short "adapter-v*"
+# tag prefix rather than switching to "clickhouse_adapter_ecto-v*" to match
+# ch_driver's tag-prefix convention (see ch_driver_release.yml) -- the tag
+# prefix is independent of the project's directory/workflow-file/Hex-package
+# name, and a short prefix is nicer for a maintainer typing `git tag`.
+#
+# Publish order matters: this project's Hex-resolved dependency on ch_driver
+# (see clickhouse_adapter_ecto/mix.exs, HEX_PUBLISH branch) means ch_driver
+# must already be published at a version satisfying that constraint before
+# this can succeed. See RELEASING.md for the full ordering -- this project
+# publishes last.
+#
+# SAFETY: this workflow is only ever exercised for real when a maintainer
+# pushes a real adapter-v* tag with HEX_API_KEY configured as a repo secret.
+# Neither has been done as part of building this pipeline.
+
+on:
+  push:
+    tags:
+      - "adapter-v*"
+  workflow_dispatch: {}
+
+jobs:
+  hex_publish:
+    runs-on: ubuntu-22.04
+    defaults:
+      run:
+        working-directory: clickhouse_adapter_ecto
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: erlef/setup-beam@v1
+        with:
+          otp-version: "28"
+          elixir-version: "1.19"
+
+      # Force the Hex-resolved dependency on ch_driver (see the
+      # `ch_driver_dep/0` branch in clickhouse_adapter_ecto/mix.exs) instead
+      # of this monorepo's local `path:` dep, which Hex packages cannot
+      # depend on.
+      - run: mix deps.get
+        env:
+          HEX_PUBLISH: "true"
+
+      - run: mix hex.publish --yes
+        env:
+          HEX_PUBLISH: "true"
+          HEX_API_KEY: ${{ secrets.HEX_API_KEY }}

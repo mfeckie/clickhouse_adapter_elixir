@@ -16,7 +16,7 @@ defmodule Ecto.Adapters.ClickHouse.TestCase do
   assumed:
 
     * **Empirically**, against this repo's pinned
-      `clickhouse/clickhouse-server:24.8` (see `adapter/docker-compose.yml`):
+      `clickhouse/clickhouse-server:24.8` (see `clickhouse_adapter_ecto/docker-compose.yml`):
       calling `Repo.transaction(fn -> ... end)` doesn't silently no-op or
       succeed -- it raises `DBConnection.ConnectionError` with message
       `"transactions are not supported by ChDriver.DBConnection: :not_supported"`.

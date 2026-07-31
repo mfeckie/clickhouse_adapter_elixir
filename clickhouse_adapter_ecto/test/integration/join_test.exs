@@ -21,7 +21,7 @@ defmodule Ecto.Adapters.ClickHouse.JoinIntegrationTest do
   `ALTER TABLE ... DELETE` mutation has no join support) -- see the
   updated error message in `QueryBuilder.delete_all/1`.
 
-  Requires `docker compose up -d` (from `adapter/`) to have been run first.
+  Requires `docker compose up -d` (from `clickhouse_adapter_ecto/`) to have been run first.
 
   Test isolation here uses `Ecto.Adapters.ClickHouse.TestCase` (see its
   moduledoc for the full rationale) instead of the hand-rolled
@@ -39,7 +39,7 @@ defmodule Ecto.Adapters.ClickHouse.JoinIntegrationTest do
   @moduletag :integration
 
   defmodule TestRepo do
-    use Ecto.Repo, otp_app: :clickhouse_adapter_elixir, adapter: Ecto.Adapters.ClickHouse
+    use Ecto.Repo, otp_app: :clickhouse_adapter_ecto, adapter: Ecto.Adapters.ClickHouse
   end
 
   defmodule Post do

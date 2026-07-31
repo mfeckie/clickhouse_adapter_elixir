@@ -1,7 +1,7 @@
 defmodule Ecto.Adapters.ClickHouse.PrimaryKeySemanticsTest do
   @moduledoc """
   End-to-end integration tests against a *live* ClickHouse instance (see
-  `adapter/docker-compose.yml`) probing exactly what happens with
+  `clickhouse_adapter_ecto/docker-compose.yml`) probing exactly what happens with
   `create table(...)`'s primary-key handling -- the single biggest footgun
   for anyone coming from Postgres/MySQL, per `Ecto.Adapters.ClickHouse.DDL`'s
   moduledoc.
@@ -48,7 +48,7 @@ defmodule Ecto.Adapters.ClickHouse.PrimaryKeySemanticsTest do
   @moduletag :integration
 
   defmodule TestRepo do
-    use Ecto.Repo, otp_app: :clickhouse_adapter_elixir, adapter: Ecto.Adapters.ClickHouse
+    use Ecto.Repo, otp_app: :clickhouse_adapter_ecto, adapter: Ecto.Adapters.ClickHouse
   end
 
   # The NAIVE pattern: no `primary_key: false`, so `Ecto.Migration` injects

@@ -2,7 +2,7 @@ defmodule Ecto.Adapters.ClickHouse.NullableIntegrationTest do
   @moduledoc """
   End-to-end integration coverage for `Nullable(T)` column support
   against a *live* ClickHouse instance
-  (see `adapter/docker-compose.yml`):
+  (see `clickhouse_adapter_ecto/docker-compose.yml`):
 
     * DDL generation honors `null: true`/`null: false` (Ecto's own default
       is `null: true`) by emitting `Nullable(...)` or a bare type,
@@ -10,7 +10,7 @@ defmodule Ecto.Adapters.ClickHouse.NullableIntegrationTest do
     * a real `Ecto.Migration` with a nullable field round-trips a `nil`
       value through `Repo.insert!/1` and `Repo.all/1`.
 
-  Requires `docker compose up -d` (from `adapter/`) to have been run first.
+  Requires `docker compose up -d` (from `clickhouse_adapter_ecto/`) to have been run first.
   """
 
   use ExUnit.Case, async: false
@@ -18,7 +18,7 @@ defmodule Ecto.Adapters.ClickHouse.NullableIntegrationTest do
   @moduletag :integration
 
   defmodule TestRepo do
-    use Ecto.Repo, otp_app: :clickhouse_adapter_elixir, adapter: Ecto.Adapters.ClickHouse
+    use Ecto.Repo, otp_app: :clickhouse_adapter_ecto, adapter: Ecto.Adapters.ClickHouse
   end
 
   defmodule CreateWidgets do

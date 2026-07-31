@@ -1,14 +1,15 @@
 defmodule Ecto.Adapters.ClickHouse.KafkaIngestionTest do
   @moduledoc """
   End-to-end integration test against a live ClickHouse + Kafka pair (see
-  `adapter/docker-compose.yml`): a migration's `up/0` creates the three
-  pieces of the Kafka streaming-ingestion pipeline (target table, Kafka
-  source table, materialized view) via raw `execute/1` SQL, a message
-  produced onto the topic lands in the target table through the
-  materialized view, and `down/0` tears everything down without
-  orphaning the Kafka consumer group.
+  `clickhouse_adapter_ecto/docker-compose.yml`): a migration's `up/0`
+  creates the three pieces of the Kafka streaming-ingestion pipeline
+  (target table, Kafka source table, materialized view) via raw
+  `execute/1` SQL, a message produced onto the topic lands in the target
+  table through the materialized view, and `down/0` tears everything down
+  without orphaning the Kafka consumer group.
 
-  Requires `docker compose up -d` (from `adapter/`) to have been run first.
+  Requires `docker compose up -d` (from `clickhouse_adapter_ecto/`) to have
+  been run first.
   """
 
   use ExUnit.Case, async: false
@@ -19,7 +20,7 @@ defmodule Ecto.Adapters.ClickHouse.KafkaIngestionTest do
   @kafka_broker "kafka:29092"
 
   defmodule TestRepo do
-    use Ecto.Repo, otp_app: :clickhouse_adapter_elixir, adapter: Ecto.Adapters.ClickHouse
+    use Ecto.Repo, otp_app: :clickhouse_adapter_ecto, adapter: Ecto.Adapters.ClickHouse
   end
 
   setup do
@@ -30,7 +31,9 @@ defmodule Ecto.Adapters.ClickHouse.KafkaIngestionTest do
       end
 
     if kafka_container == "" do
-      flunk("kafka service isn't running -- run `docker compose up -d` from adapter/ first")
+      flunk(
+        "kafka service isn't running -- run `docker compose up -d` from clickhouse_adapter_ecto/ first"
+      )
     end
 
     {:ok, ddl_conn} = ChDriver.start_link(hostname: "localhost", port: 9000)

@@ -1,13 +1,13 @@
 defmodule Ecto.Adapters.ClickHouse.DataSkippingIndexTest do
   @moduledoc """
   End-to-end integration test against a *live* ClickHouse instance (see
-  `adapter/docker-compose.yml`) proving that a data-skipping index
+  `clickhouse_adapter_ecto/docker-compose.yml`) proving that a data-skipping index
   (`ALTER TABLE ... ADD INDEX ... TYPE minmax ...`), added via a raw
   `execute/1` statement in an `Ecto.Migration`, is actually created on the
   server and actually consulted by the query planner -- not just that the
   DDL string is well-formed.
 
-  Requires `docker compose up -d` (from `adapter/`) to have been run first.
+  Requires `docker compose up -d` (from `clickhouse_adapter_ecto/`) to have been run first.
   """
 
   use ExUnit.Case, async: false
@@ -15,7 +15,7 @@ defmodule Ecto.Adapters.ClickHouse.DataSkippingIndexTest do
   @moduletag :integration
 
   defmodule TestRepo do
-    use Ecto.Repo, otp_app: :clickhouse_adapter_elixir, adapter: Ecto.Adapters.ClickHouse
+    use Ecto.Repo, otp_app: :clickhouse_adapter_ecto, adapter: Ecto.Adapters.ClickHouse
   end
 
   defmodule AddAmountMinmaxIndex do

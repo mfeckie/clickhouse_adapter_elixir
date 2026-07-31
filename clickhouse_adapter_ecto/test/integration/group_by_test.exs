@@ -23,7 +23,7 @@ defmodule Ecto.Adapters.ClickHouse.GroupByIntegrationTest do
   with a clear error rather than silently producing invalid SQL -- see
   `Expression.expr/3`'s `{:filter, ...}` clause.
 
-  Requires `docker compose up -d` (from `adapter/`) to have been run first.
+  Requires `docker compose up -d` (from `clickhouse_adapter_ecto/`) to have been run first.
   """
 
   use ExUnit.Case, async: false
@@ -32,7 +32,7 @@ defmodule Ecto.Adapters.ClickHouse.GroupByIntegrationTest do
   @moduletag :integration
 
   defmodule TestRepo do
-    use Ecto.Repo, otp_app: :clickhouse_adapter_elixir, adapter: Ecto.Adapters.ClickHouse
+    use Ecto.Repo, otp_app: :clickhouse_adapter_ecto, adapter: Ecto.Adapters.ClickHouse
   end
 
   defmodule Post do

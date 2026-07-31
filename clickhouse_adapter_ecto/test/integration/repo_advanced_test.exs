@@ -1,7 +1,7 @@
 defmodule Ecto.Adapters.ClickHouse.RepoAdvancedIntegrationTest do
   @moduledoc """
   Further end-to-end integration coverage against a *live* ClickHouse
-  instance (see `adapter/docker-compose.yml`), filling gaps not covered by
+  instance (see `clickhouse_adapter_ecto/docker-compose.yml`), filling gaps not covered by
   `repo_test.exs`:
 
     * a more realistic mixed-column-type schema on a `MergeTree` table
@@ -23,7 +23,7 @@ defmodule Ecto.Adapters.ClickHouse.RepoAdvancedIntegrationTest do
       `:naive_datetime`/`:utc_datetime` Ecto fields, round-tripping correctly
       through `Repo.insert!/1`/`Repo.all/1` (see the dedicated tests below).
 
-  Requires `docker compose up -d` (from `adapter/`) to have been run first.
+  Requires `docker compose up -d` (from `clickhouse_adapter_ecto/`) to have been run first.
   """
 
   use ExUnit.Case, async: false
@@ -31,7 +31,7 @@ defmodule Ecto.Adapters.ClickHouse.RepoAdvancedIntegrationTest do
   @moduletag :integration
 
   defmodule TestRepo do
-    use Ecto.Repo, otp_app: :clickhouse_adapter_elixir, adapter: Ecto.Adapters.ClickHouse
+    use Ecto.Repo, otp_app: :clickhouse_adapter_ecto, adapter: Ecto.Adapters.ClickHouse
   end
 
   # Excludes the table's `active UInt8` and `recorded_at

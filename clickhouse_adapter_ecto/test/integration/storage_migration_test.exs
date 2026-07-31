@@ -1,12 +1,12 @@
 defmodule Ecto.Adapters.ClickHouse.StorageMigrationTest do
   @moduledoc """
   End-to-end integration test against a *live* ClickHouse instance (see
-  `adapter/docker-compose.yml`): `Ecto.Adapter.Storage`
+  `clickhouse_adapter_ecto/docker-compose.yml`): `Ecto.Adapter.Storage`
   (`storage_up/1`/`storage_down/1`/`storage_status/1`) and a real
   `Ecto.Migration` actually creating a table via `Ecto.Migrator.run/4`
   against a real server, not just unit-testing DDL string generation.
 
-  Requires `docker compose up -d` (from `adapter/`) to have been run first.
+  Requires `docker compose up -d` (from `clickhouse_adapter_ecto/`) to have been run first.
   """
 
   use ExUnit.Case, async: false
@@ -16,7 +16,7 @@ defmodule Ecto.Adapters.ClickHouse.StorageMigrationTest do
   @base_opts [hostname: "localhost", port: 9000, username: "default", password: ""]
 
   defmodule TestRepo do
-    use Ecto.Repo, otp_app: :clickhouse_adapter_elixir, adapter: Ecto.Adapters.ClickHouse
+    use Ecto.Repo, otp_app: :clickhouse_adapter_ecto, adapter: Ecto.Adapters.ClickHouse
   end
 
   defmodule CreateWidgets do

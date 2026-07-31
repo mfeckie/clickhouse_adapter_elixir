@@ -1,24 +1,35 @@
-name: adapter CI
+name: clickhouse_adapter_ecto CI
 
 on:
   push:
     branches: [main]
-    paths: ["ch_driver/**", "adapter/**", ".github/workflows/adapter_ci.yml"]
+    paths:
+      [
+        "ch_driver/**",
+        "clickhouse_adapter_ecto/**",
+        ".github/workflows/clickhouse_adapter_ecto_ci.yml",
+      ]
   pull_request:
-    paths: ["ch_driver/**", "adapter/**", ".github/workflows/adapter_ci.yml"]
+    paths:
+      [
+        "ch_driver/**",
+        "clickhouse_adapter_ecto/**",
+        ".github/workflows/clickhouse_adapter_ecto_ci.yml",
+      ]
 
 jobs:
   test:
     runs-on: ubuntu-22.04
     defaults:
       run:
-        working-directory: adapter
+        working-directory: clickhouse_adapter_ecto
 
-    # adapter's integration suite (test/integration, @moduletag :integration)
-    # exercises a real Ecto.Repo against ClickHouse, including one Kafka
-    # table-engine ingestion test -- both services are provisioned here with
-    # the same pinned images/ports/env adapter/docker-compose.yml uses
-    # locally, so CI and local dev stay identical.
+    # clickhouse_adapter_ecto's integration suite (test/integration,
+    # @moduletag :integration) exercises a real Ecto.Repo against ClickHouse,
+    # including one Kafka table-engine ingestion test -- both services are
+    # provisioned here with the same pinned images/ports/env
+    # clickhouse_adapter_ecto/docker-compose.yml uses locally, so CI and
+    # local dev stay identical.
     services:
       clickhouse:
         image: clickhouse/clickhouse-server:24.8
@@ -75,9 +86,9 @@ jobs:
           path: |
             ch_driver/deps
             ch_driver/_build
-            adapter/deps
-            adapter/_build
-          key: ${{ runner.os }}-mix-${{ hashFiles('ch_driver/mix.lock', 'adapter/mix.lock') }}
+            clickhouse_adapter_ecto/deps
+            clickhouse_adapter_ecto/_build
+          key: ${{ runner.os }}-mix-${{ hashFiles('ch_driver/mix.lock', 'clickhouse_adapter_ecto/mix.lock') }}
 
       - name: Cache cargo registry & build
         uses: actions/cache@v4
@@ -96,8 +107,8 @@ jobs:
       # normal download would 404 even transitively through this project's
       # dependency on ch_driver. Force a local Rust build instead (the Rust
       # toolchain is already set up above). Remove this, and the temporary
-      # `{:rustler, ...}` entry in adapter/mix.exs's deps, once the first
-      # real ch_driver-v* tag has been released.
+      # `{:rustler, ...}` entry in clickhouse_adapter_ecto/mix.exs's deps,
+      # once the first real ch_driver-v* tag has been released.
       - run: mix compile --warnings-as-errors
         env:
           RUSTLER_PRECOMPILED_FORCE_BUILD_ALL: "1"

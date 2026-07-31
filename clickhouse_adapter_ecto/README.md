@@ -143,7 +143,7 @@ Not on Hex. Pull it in from this repo with a path dependency:
 ```elixir
 def deps do
   [
-    {:clickhouse_adapter_elixir, path: "path/to/clickhouse_adapter_elixir/adapter"}
+    {:clickhouse_adapter_ecto, path: "path/to/clickhouse_adapter_elixir/clickhouse_adapter_ecto"}
   ]
 end
 ```
@@ -282,7 +282,7 @@ bookkeeping.
 This repo is split into two Mix projects, layered bottom to top:
 
 ```
-ch_driver  <-  adapter (this project)
+ch_driver  <-  clickhouse_adapter_ecto (this project)
 ```
 
 * [`ch_driver`](../ch_driver) -- the native-protocol `DBConnection` driver
@@ -292,5 +292,5 @@ ch_driver  <-  adapter (this project)
   pure-Elixir compressed block envelope built on top of it) -- the two
   primitives ClickHouse's native protocol needs for its compressed block
   envelope, wired up as this driver's opt-in `:compression` option.
-* `adapter` (this project) -- `Ecto.Adapters.ClickHouse`, the Ecto integration
-  layer on top of `ch_driver`.
+* `clickhouse_adapter_ecto` (this project) -- `Ecto.Adapters.ClickHouse`, the
+  Ecto integration layer on top of `ch_driver`.

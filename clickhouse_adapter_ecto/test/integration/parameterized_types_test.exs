@@ -2,7 +2,7 @@ defmodule Ecto.Adapters.ClickHouse.ParameterizedTypesTest do
   @moduledoc """
   End-to-end integration coverage for `Ecto.Adapters.ClickHouse.Types.FixedString`
   and `Ecto.Adapters.ClickHouse.Migration`, against a *live* ClickHouse
-  instance (see `adapter/docker-compose.yml`):
+  instance (see `clickhouse_adapter_ecto/docker-compose.yml`):
 
     * `Ecto.Adapters.ClickHouse.Migration.fixed_string/1` generates
       `FixedString(N)` DDL via `add/3`'s type-safe (validated) syntax,
@@ -15,7 +15,7 @@ defmodule Ecto.Adapters.ClickHouse.ParameterizedTypesTest do
     * `Ecto.Adapters.ClickHouse.Types.FixedString.cast/2` rejects a value
       longer than `size` before it ever reaches ClickHouse.
 
-  Requires `docker compose up -d` (from `adapter/`) to have been run first.
+  Requires `docker compose up -d` (from `clickhouse_adapter_ecto/`) to have been run first.
   """
 
   use ExUnit.Case, async: false
@@ -26,7 +26,7 @@ defmodule Ecto.Adapters.ClickHouse.ParameterizedTypesTest do
   alias Ecto.Adapters.ClickHouse.Types.FixedString
 
   defmodule TestRepo do
-    use Ecto.Repo, otp_app: :clickhouse_adapter_elixir, adapter: Ecto.Adapters.ClickHouse
+    use Ecto.Repo, otp_app: :clickhouse_adapter_ecto, adapter: Ecto.Adapters.ClickHouse
   end
 
   defmodule CreateWidgets do

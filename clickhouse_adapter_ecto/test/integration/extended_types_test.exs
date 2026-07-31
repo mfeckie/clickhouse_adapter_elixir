@@ -3,7 +3,7 @@ defmodule Ecto.Adapters.ClickHouse.ExtendedTypesIntegrationTest do
   End-to-end integration coverage for the extended native type support
   (`Array(T)`, `Decimal(P, S)`, `UUID`,
   and `LowCardinality(T)`), against a *live* ClickHouse instance (see
-  `adapter/docker-compose.yml`):
+  `clickhouse_adapter_ecto/docker-compose.yml`):
 
     * `{:array, inner_type}` in a migration generates `Array(...)` DDL, and
       an `:array` Ecto schema field round-trips through `Repo.insert!/1` /
@@ -36,7 +36,7 @@ defmodule Ecto.Adapters.ClickHouse.ExtendedTypesIntegrationTest do
   suite doesn't otherwise need -- `ch_driver/test/ch_driver/map_test.exs`
   already covers `Map(K, V)` thoroughly at the raw `ChDriver.query` level.
 
-  Requires `docker compose up -d` (from `adapter/`) to have been run first.
+  Requires `docker compose up -d` (from `clickhouse_adapter_ecto/`) to have been run first.
   """
 
   use ExUnit.Case, async: false
@@ -44,7 +44,7 @@ defmodule Ecto.Adapters.ClickHouse.ExtendedTypesIntegrationTest do
   @moduletag :integration
 
   defmodule TestRepo do
-    use Ecto.Repo, otp_app: :clickhouse_adapter_elixir, adapter: Ecto.Adapters.ClickHouse
+    use Ecto.Repo, otp_app: :clickhouse_adapter_ecto, adapter: Ecto.Adapters.ClickHouse
   end
 
   defmodule CreateWidgets do

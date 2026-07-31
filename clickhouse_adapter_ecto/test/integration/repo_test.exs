@@ -1,20 +1,20 @@
 defmodule Ecto.Adapters.ClickHouse.RepoIntegrationTest do
   @moduledoc """
   End-to-end integration test against a *live* ClickHouse instance (see
-  `adapter/docker-compose.yml`): `Ecto.Repo.insert!/1` and
+  `clickhouse_adapter_ecto/docker-compose.yml`): `Ecto.Repo.insert!/1` and
   `Ecto.Repo.all/1` actually round-tripping data through
   `Ecto.Adapters.ClickHouse` (an `Ecto.Adapters.SQL`-based adapter over
   `Ecto.Adapters.ClickHouse.Connection`) against a real server, not just
   unit-testing SQL string generation.
 
-  Requires `docker compose up -d` (from `adapter/`) to have been run first;
+  Requires `docker compose up -d` (from `clickhouse_adapter_ecto/`) to have been run first;
   see the moduledoc there for details.
   """
 
   use ExUnit.Case, async: false
 
   defmodule TestRepo do
-    use Ecto.Repo, otp_app: :clickhouse_adapter_elixir, adapter: Ecto.Adapters.ClickHouse
+    use Ecto.Repo, otp_app: :clickhouse_adapter_ecto, adapter: Ecto.Adapters.ClickHouse
   end
 
   defmodule Event do

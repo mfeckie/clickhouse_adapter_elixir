@@ -119,7 +119,8 @@ defmodule Ecto.Adapters.ClickHouse.Connection do
   cannot be driven end-to-end through `Ecto.Repo.transaction/2` the
   normal way. This function, and the underlying `ChDriver.Stream`
   machinery, are fully real and independently tested (`ch_driver/test/
-  ch_driver/stream_test.exs`, `adapter/test/integration/stream_test.exs`)
+  ch_driver/stream_test.exs`,
+  `clickhouse_adapter_ecto/test/integration/stream_test.exs`)
   via `DBConnection.run/3` directly (which only needs a plain checkout,
   not a transaction) -- adding real ClickHouse-transaction support to
   unblock `Repo.transaction/2`/`Repo.stream/2` end-to-end is tracked

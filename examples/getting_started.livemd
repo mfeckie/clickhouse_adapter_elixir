@@ -2,7 +2,7 @@
 
 ## What this is
 
-This notebook is a hands-on tour of `clickhouse_adapter_elixir` -- an
+This notebook is a hands-on tour of `clickhouse_adapter_ecto` -- an
 `Ecto.Adapters.SQL`-based adapter that talks to ClickHouse over its native
 TCP protocol (not HTTP), backed by `ch_driver`, a native-protocol
 `DBConnection` driver.
@@ -25,10 +25,10 @@ instance and is known to work as written.
 
 This notebook needs a real ClickHouse server on `localhost:9000` (the
 native protocol port). The easiest way is the `docker-compose.yml` already
-in this repo's `adapter/` directory:
+in this repo's `clickhouse_adapter_ecto/` directory:
 
 ```shell
-cd adapter
+cd clickhouse_adapter_ecto
 docker compose up -d
 ```
 
@@ -55,23 +55,23 @@ you're also using for other things.
 
 ## Installing dependencies
 
-Neither `clickhouse_adapter_elixir` nor `ch_driver` are published to Hex
+Neither `clickhouse_adapter_ecto` nor `ch_driver` are published to Hex
 yet, so this notebook installs them as local path dependencies, relative to
 this file's location (`examples/getting_started.livemd`) in the repo:
 
 ```
 clickhouse_adapter_elixir/
-├── adapter/       <- Ecto.Adapters.ClickHouse (app: :clickhouse_adapter_elixir)
-├── ch_driver/     <- native-protocol DBConnection driver, including its
-│                     LZ4/CityHash compression NIF and compressed-block
-│                     wire envelope (app: :ch_driver)
+├── clickhouse_adapter_ecto/   <- Ecto.Adapters.ClickHouse (app: :clickhouse_adapter_ecto)
+├── ch_driver/                 <- native-protocol DBConnection driver, including its
+│                                 LZ4/CityHash compression NIF and compressed-block
+│                                 wire envelope (app: :ch_driver)
 └── examples/
     └── getting_started.livemd   <- you are here
 ```
 
 ```elixir
 Mix.install([
-  {:clickhouse_adapter_elixir, path: "../adapter"},
+  {:clickhouse_adapter_ecto, path: "../clickhouse_adapter_ecto"},
   {:ch_driver, path: "../ch_driver"}
 ])
 
@@ -79,7 +79,7 @@ Mix.install([
 # issue), swap the cell above for version-pinned Hex deps instead -- e.g.:
 #
 # Mix.install([
-#   {:clickhouse_adapter_elixir, "~> 0.1"},
+#   {:clickhouse_adapter_ecto, "~> 0.1"},
 #   {:ch_driver, "~> 0.1"}
 # ])
 ```
@@ -92,7 +92,7 @@ needed for a standalone notebook like this one):
 
 ```elixir
 defmodule MyApp.Repo do
-  use Ecto.Repo, otp_app: :clickhouse_adapter_elixir, adapter: Ecto.Adapters.ClickHouse
+  use Ecto.Repo, otp_app: :clickhouse_adapter_ecto, adapter: Ecto.Adapters.ClickHouse
 end
 
 {:ok, _} =
@@ -428,7 +428,7 @@ end
 
 This notebook only scratches the surface. For anything not covered here:
 
-* **`adapter/README.md`** -- what's supported end to end (SELECT/INSERT,
+* **`clickhouse_adapter_ecto/README.md`** -- what's supported end to end (SELECT/INSERT,
   migrations, storage), installation, and the full write-up on why
   `Ecto.Adapters.SQL.Sandbox` doesn't work with this adapter and what to
   use instead for test isolation (`Ecto.Adapters.ClickHouse.TestCase`).
