@@ -454,6 +454,68 @@ defmodule Ecto.Adapters.ClickHouse.Connection do
   ## must be written as explicit `up/0`/`down/0` (or raw `execute/1` SQL),
   ## rather than falling through to the generic "not implemented" message.
   ##
+  ## ## `ORDER BY` / partition key changes after `CREATE TABLE`
+  ##
+  ## `ALTER TABLE ... MODIFY ORDER BY new_expr` has no representation in
+  ## `Ecto.Migration`'s DSL at all (there is no `alter table(...) do modify
+  ## order_by(...) end` -- Ecto's `:alter` subcommands only cover columns).
+  ## The only way to issue it is a raw SQL string passed to `execute/1`, and
+  ## `execute_ddl/1` (this module) passes such strings through verbatim (see
+  ## the `is_binary/1` clause below) -- so an explicit, intentional
+  ## `MODIFY ORDER BY` is never blocked. What's guarded against is an
+  ## *implicit* one: since it's structurally unreachable via `change/0`
+  ## auto-reversal, a migration author changing a sort key must write it as
+  ## explicit `up/0` + `down/0`, and the `down/0` cannot actually restore the
+  ## prior physical layout -- at best it can issue another `MODIFY ORDER BY`
+  ## back to the old expression, which reorders future merges but does not
+  ## undo merges that already happened under the new key. Document that
+  ## caveat in the migration itself; there is nothing this adapter can
+  ## auto-generate here.
+  ##
+  ## ## Data-skipping indices (`ALTER TABLE ... ADD INDEX ... TYPE ...`)
+  ##
+  ## `Ecto.Migration.index/3` (`create index(...)`) models a Postgres/MySQL
+  ## B-tree-shaped index: a column list plus `unique:`/`using:`/`where:`.
+  ## ClickHouse's data-skipping indices (`minmax`, `set`, `bloom_filter`,
+  ## `ngrambf_v1`, `tokenbf_v1`, ...) are a different mechanism entirely --
+  ## an arbitrary expression, a type with its own positional tuning
+  ## parameters (e.g. `bloom_filter(0.01)`), and a `GRANULARITY n`, used to
+  ## skip whole granules during a scan rather than to accelerate point
+  ## lookups. None of `index/3`'s fields map onto that shape, and stuffing
+  ## `type(params) GRANULARITY n` into `using:` would misrepresent `using:`'s
+  ## documented meaning (an index method name like `:gin`/`:hash`) for every
+  ## other adapter that reads it.
+  ##
+  ## This adapter does not introduce a ClickHouse-specific
+  ## migration DSL command for these. `execute_ddl/1` only recognizes the
+  ## handful of `Ecto.Migration.Command` shapes documented above; a
+  ## `{:create, %Index{}}` (from `create index(...)`) falls through to the
+  ## generic clause at the bottom of this section, which raises and points
+  ## at `execute/1`. Add and drop data-skipping indices with raw SQL:
+  ##
+  ##     execute("ALTER TABLE events ADD INDEX amount_minmax_idx amount TYPE minmax GRANULARITY 4")
+  ##     execute("ALTER TABLE events DROP INDEX amount_minmax_idx")
+  ##
+  ## Adding an index is metadata-only and applies to parts written from then
+  ## on; existing parts are only covered once `ALTER TABLE ... MATERIALIZE
+  ## INDEX name` (or the next merge) rebuilds them -- run `MATERIALIZE INDEX`
+  ## explicitly in the same migration if the index needs to cover existing
+  ## data immediately. `change/0` cannot auto-reverse either statement (it
+  ## doesn't know either shape), so write these as explicit `up/0` + `down/0`
+  ## using `execute/1` for both directions.
+  ##
+  ## ## Projections (`ALTER TABLE ... ADD PROJECTION`)
+  ##
+  ## Out of scope for this adapter's migration support. A projection defines
+  ## an alternate physical layout (its own sort order and/or aggregation) of
+  ## the same table data, materialized and kept in sync by ClickHouse in the
+  ## background -- closer to a materialized view bolted onto the table than
+  ## to an index. It doesn't share data-skipping indices' comparatively
+  ## simple `ADD INDEX name expr TYPE type(params) GRANULARITY n` grammar
+  ## (`ADD PROJECTION` takes an arbitrary `SELECT`-shaped body), and nothing
+  ## about it is trivial enough to justify adapter-level support before a
+  ## concrete use case demands it. Use raw SQL via `execute/1` if needed.
+  ##
   ## Every table this generates DDL for needs an `ENGINE`. If the migration
   ## author passes `options: "ENGINE = ... "` (via `table(:foo, options:
   ## "ENGINE = MergeTree ORDER BY id")`) that raw string is used verbatim;
