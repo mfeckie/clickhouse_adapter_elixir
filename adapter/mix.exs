@@ -1,14 +1,28 @@
 defmodule ClickhouseAdapterElixir.MixProject do
   use Mix.Project
 
+  @version "0.1.0"
+  # adapter is a sibling project inside the clickhouse_adapter_elixir repo --
+  # see ch_codec/mix.exs for the same convention.
+  @source_url "https://github.com/mfeckie/clickhouse_adapter_elixir"
+
   def project do
     [
       app: :clickhouse_adapter_elixir,
-      version: "0.1.0",
+      version: @version,
       elixir: "~> 1.19",
       start_permanent: Mix.env() == :prod,
       elixirc_paths: elixirc_paths(Mix.env()),
-      deps: deps()
+      deps: deps(),
+      description: "An Ecto adapter for ClickHouse that speaks its native TCP protocol.",
+      package: package()
+    ]
+  end
+
+  defp package do
+    [
+      licenses: ["MIT"],
+      links: %{"GitHub" => @source_url}
     ]
   end
 
@@ -32,7 +46,25 @@ defmodule ClickhouseAdapterElixir.MixProject do
     [
       {:ecto, "~> 3.0"},
       {:ecto_sql, "~> 3.0"},
-      {:ch_driver, path: "../ch_driver"}
+      ch_driver_dep()
     ]
+  end
+
+  # adapter depends on ch_driver. Locally (the common case -- see
+  # RELEASING.md) both live in this monorepo, so a `path:` dep gives fast
+  # iteration without needing to publish ch_driver on every change. A package
+  # published to Hex, though, cannot depend on another package via `path:` --
+  # every dependency must itself be Hex-resolvable. So when *this* package is
+  # being built/published for Hex (CI's release workflow sets
+  # HEX_PUBLISH=true, see .github/workflows/adapter_release.yml), swap to a
+  # real Hex version constraint instead. See RELEASING.md for the publish
+  # order this constraint implies (ch_codec, then ch_native, then ch_driver,
+  # must publish first).
+  defp ch_driver_dep do
+    if System.get_env("HEX_PUBLISH") in ["1", "true"] do
+      {:ch_driver, "~> 0.1"}
+    else
+      {:ch_driver, path: "../ch_driver"}
+    end
   end
 end

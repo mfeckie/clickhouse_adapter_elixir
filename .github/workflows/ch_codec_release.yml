@@ -83,3 +83,47 @@ jobs:
         with:
           files: |
             ${{ steps.build-crate.outputs.file-path }}
+
+  # Publishes ch_codec itself to Hex.pm, once every NIF target above has an
+  # asset attached to the GitHub release. This must run after build_release
+  # (not in parallel) since it downloads each of those release assets to
+  # compute the checksum file `mix hex.publish` bundles into the package
+  # (see ch_codec/mix.exs `package.files` and rustler_precompiled's docs) --
+  # publishing before the release assets exist would checksum nothing, or
+  # stale binaries.
+  #
+  # ch_codec is the first package in the publish chain (ch_codec -> ch_native
+  # -> ch_driver -> adapter, see RELEASING.md) so it has no upstream Hex
+  # dependency to worry about ordering against.
+  #
+  # SAFETY: this job is only ever exercised for real when a maintainer
+  # pushes a real ch_codec-v* tag with HEX_API_KEY configured as a repo
+  # secret. Neither has been done as part of building this pipeline.
+  hex_publish:
+    name: Publish ch_codec to Hex.pm
+    needs: build_release
+    runs-on: ubuntu-22.04
+    defaults:
+      run:
+        working-directory: ch_codec
+    steps:
+      - name: Checkout source code
+        uses: actions/checkout@v6
+
+      - uses: erlef/setup-beam@v1
+        with:
+          otp-version: "28"
+          elixir-version: "1.19"
+
+      - run: mix deps.get
+
+      # Fetches every target's precompiled NIF from the GitHub release
+      # published above and writes checksum-Elixir.ChCodec.Native.exs, which
+      # `package.files` (ch_codec/mix.exs) includes in the Hex package so
+      # RustlerPrecompiled can verify downloads at install time.
+      - name: Fetch precompiled NIFs and generate checksums
+        run: mix rustler_precompiled.download ChCodec.Native --all --print
+
+      - run: mix hex.publish --yes
+        env:
+          HEX_API_KEY: ${{ secrets.HEX_API_KEY }}

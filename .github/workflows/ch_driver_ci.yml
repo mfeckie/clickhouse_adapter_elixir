@@ -1,0 +1,72 @@
+name: ch_driver CI
+
+on:
+  push:
+    branches: [main]
+    paths: ["ch_codec/**", "ch_native/**", "ch_driver/**", ".github/workflows/ch_driver_ci.yml"]
+  pull_request:
+    paths: ["ch_codec/**", "ch_native/**", "ch_driver/**", ".github/workflows/ch_driver_ci.yml"]
+
+jobs:
+  test:
+    runs-on: ubuntu-22.04
+    defaults:
+      run:
+        working-directory: ch_driver
+
+    # ch_driver's test suite talks to a real ClickHouse server over the
+    # native TCP protocol (no mocked transport), so CI needs a live instance.
+    # Pinned to the same image/version adapter/docker-compose.yml uses
+    # locally, with the same ports so nothing else in the test suite needs
+    # to change between local dev and CI.
+    services:
+      clickhouse:
+        image: clickhouse/clickhouse-server:24.8
+        ports:
+          - 9000:9000
+          - 8123:8123
+        env:
+          CLICKHOUSE_DB: default
+          CLICKHOUSE_USER: default
+          CLICKHOUSE_PASSWORD: ""
+          CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: 1
+        options: >-
+          --health-cmd "wget --no-verbose --tries=1 --spider http://localhost:8123/ping"
+          --health-interval 2s
+          --health-timeout 2s
+          --health-retries 30
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: erlef/setup-beam@v1
+        with:
+          otp-version: "28"
+          elixir-version: "1.19"
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache mix deps
+        uses: actions/cache@v4
+        with:
+          path: |
+            ch_codec/deps
+            ch_codec/_build
+            ch_native/deps
+            ch_native/_build
+            ch_driver/deps
+            ch_driver/_build
+          key: ${{ runner.os }}-mix-${{ hashFiles('ch_codec/mix.lock', 'ch_native/mix.lock', 'ch_driver/mix.lock') }}
+
+      - name: Cache cargo registry & build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ch_codec/native/chcodec_native/target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('ch_codec/Cargo.lock') }}
+
+      - run: mix deps.get
+      - run: mix format --check-formatted
+      - run: mix compile --warnings-as-errors
+      - run: mix test

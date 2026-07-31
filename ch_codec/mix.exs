@@ -15,7 +15,7 @@ defmodule ChCodec.MixProject do
       elixir: "~> 1.19",
       start_permanent: Mix.env() == :prod,
       deps: deps(),
-      description: "LZ4 block + CityHash v1.0.3 codec NIF for ClickHouse's native protocol.",
+      description: "LZ4 block + CityHash v1.0.2 codec NIF for ClickHouse's native protocol.",
       package: package()
     ]
   end

@@ -1,0 +1,46 @@
+name: ch_driver release
+
+# Publishes ch_driver to Hex.pm when a ch_driver-v* tag is pushed. Mirrors
+# ch_codec's tag-prefix convention (see ch_codec_release.yml).
+#
+# Publish order matters: ch_driver's Hex-resolved dependency on ch_native
+# (see ch_driver/mix.exs, HEX_PUBLISH branch) means ch_codec and then
+# ch_native must already be published at versions satisfying that chain of
+# constraints before this can succeed. See RELEASING.md for the full
+# ordering.
+#
+# SAFETY: this workflow is only ever exercised for real when a maintainer
+# pushes a real ch_driver-v* tag with HEX_API_KEY configured as a repo
+# secret. Neither has been done as part of building this pipeline.
+
+on:
+  push:
+    tags:
+      - "ch_driver-v*"
+  workflow_dispatch: {}
+
+jobs:
+  hex_publish:
+    runs-on: ubuntu-22.04
+    defaults:
+      run:
+        working-directory: ch_driver
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: erlef/setup-beam@v1
+        with:
+          otp-version: "28"
+          elixir-version: "1.19"
+
+      # Force the Hex-resolved dependency on ch_native (see the
+      # `ch_native_dep/0` branch in ch_driver/mix.exs) instead of this
+      # monorepo's local `path:` dep, which Hex packages cannot depend on.
+      - run: mix deps.get
+        env:
+          HEX_PUBLISH: "true"
+
+      - run: mix hex.publish --yes
+        env:
+          HEX_PUBLISH: "true"
+          HEX_API_KEY: ${{ secrets.HEX_API_KEY }}
