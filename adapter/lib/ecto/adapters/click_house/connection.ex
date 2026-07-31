@@ -16,7 +16,7 @@ defmodule Ecto.Adapters.ClickHouse.Connection do
   placeholder (`bind_params/2` tracks quoted regions while scanning).
 
   ClickHouse's parameter mechanism has no type-independent way to express
-  NULL (see `ChDriver.Protocol.param_text/1`), so a `nil` value is the one
+  NULL (see `ChDriver.Params.text/1`), so a `nil` value is the one
   exception: it's inlined directly as the literal `NULL` token, which
   carries no injection risk since it's a fixed constant.
   """
@@ -126,9 +126,8 @@ defmodule Ecto.Adapters.ClickHouse.Connection do
 
   defp do_bind([:placeholder | rest], [value | params_rest], sql_acc, wire_acc, ix) do
     name = "p#{ix}"
-    placeholder = ["{", name, ":", param_type!(value), "}"]
-    raw_text = ChDriver.Protocol.param_text(value)
-    rounds = ChDriver.Protocol.escape_rounds(value)
+    {type, raw_text, rounds} = ChDriver.Params.encode(value)
+    placeholder = ["{", name, ":", type, "}"]
     wire_param = {name, raw_text, rounds}
     do_bind(rest, params_rest, [placeholder | sql_acc], [wire_param | wire_acc], ix + 1)
   end
@@ -161,8 +160,9 @@ defmodule Ecto.Adapters.ClickHouse.Connection do
   end
 
   # `q` is the terminating quote byte (`?'` or `?"`); backslash-escapes are
-  # honored the same way ClickHouse itself parses them (see `escape_string/1`)
-  # so an escaped quote never ends the region early.
+  # honored the same way ClickHouse itself parses them (see
+  # `ChDriver.Params.quote_param_value/2`) so an escaped quote never ends
+  # the region early.
   defp consume_quoted(<<"\\", c, rest::binary>>, q, acc) do
     consume_quoted(rest, q, <<acc::binary, "\\", c>>)
   end
@@ -174,41 +174,6 @@ defmodule Ecto.Adapters.ClickHouse.Connection do
   end
 
   defp consume_quoted(<<>>, _q, acc), do: {acc, <<>>}
-
-  # Maps an Elixir runtime value to the ClickHouse type name used in its
-  # `{name:Type}` placeholder. There's no clause for `nil` -- `do_bind/5`
-  # inlines it as a literal `NULL` before this is ever called, since no
-  # single declared parameter type parses NULL correctly against every
-  # column type it might be compared against (a `Nullable(String)` NULL
-  # parameter fails to bind against an `Int32` column with "Attempt to
-  # read after eof... while converting '' to Int32").
-  defp param_type!(b) when is_binary(b), do: "String"
-  defp param_type!(i) when is_integer(i), do: "Int64"
-  defp param_type!(f) when is_float(f), do: "Float64"
-  defp param_type!(bool) when is_boolean(bool), do: "UInt8"
-  defp param_type!(%Decimal{}), do: "String"
-  defp param_type!(%Date{}), do: "Date"
-  defp param_type!(%NaiveDateTime{}), do: "DateTime"
-  defp param_type!(%DateTime{}), do: "DateTime"
-  defp param_type!([]), do: "Array(String)"
-  defp param_type!([head | _]), do: "Array(#{param_type!(head)})"
-
-  defp param_type!(other) do
-    raise ArgumentError,
-          "the ClickHouse adapter does not know how to bind #{inspect(other)} as a query " <>
-            "parameter"
-  end
-
-  # ClickHouse string literals use backslash escaping (like MySQL):
-  # `SELECT 'it''s'` fails while `SELECT 'it\'s'` and doubled
-  # backslashes round-trip correctly. Used for the handful of literal
-  # constants `expr/3` writes directly into the query text (values that
-  # come from the query definition itself, not a runtime `^` param).
-  defp escape_string(value) do
-    value
-    |> :binary.replace("\\", "\\\\", [:global])
-    |> :binary.replace("'", "\\'", [:global])
-  end
 
   ## Query generation (SELECT)
 
@@ -1035,7 +1000,7 @@ defmodule Ecto.Adapters.ClickHouse.Connection do
   defp expr(false, _sources, _query), do: "0"
 
   defp expr(literal, _sources, _query) when is_binary(literal) do
-    [?', escape_string(literal), ?']
+    ChDriver.Params.quote_param_value(literal, 1)
   end
 
   defp expr(literal, _sources, _query) when is_integer(literal), do: Integer.to_string(literal)

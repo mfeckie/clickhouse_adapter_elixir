@@ -2,7 +2,7 @@ defmodule ChDriver.ParamsTest do
   use ExUnit.Case, async: true
 
   alias ChDriver.Connection
-  alias ChDriver.Protocol
+  alias ChDriver.Params
 
   @moduletag :integration
 
@@ -84,17 +84,17 @@ defmodule ChDriver.ParamsTest do
     end
   end
 
-  describe "Protocol.param_text/1" do
+  describe "Params.text/1" do
     test "renders common Elixir terms as ClickHouse literal text" do
-      assert Protocol.param_text(5) == "5"
-      assert Protocol.param_text(3.5) == "3.5"
-      assert Protocol.param_text(true) == "1"
-      assert Protocol.param_text(false) == "0"
-      assert Protocol.param_text("hello") == "hello"
-      assert Protocol.param_text(~D[2024-01-02]) == "2024-01-02"
-      assert Protocol.param_text(~N[2024-01-02 03:04:05]) == "2024-01-02 03:04:05"
-      assert Protocol.param_text([1, 2, 3]) == "[1,2,3]"
-      assert Protocol.param_text(["a", "b"]) == "['a','b']"
+      assert Params.text(5) == "5"
+      assert Params.text(3.5) == "3.5"
+      assert Params.text(true) == "1"
+      assert Params.text(false) == "0"
+      assert Params.text("hello") == "hello"
+      assert Params.text(~D[2024-01-02]) == "2024-01-02"
+      assert Params.text(~N[2024-01-02 03:04:05]) == "2024-01-02 03:04:05"
+      assert Params.text([1, 2, 3]) == "[1,2,3]"
+      assert Params.text(["a", "b"]) == "['a','b']"
     end
 
     test "round-trips a Decimal parameter live", %{conn: conn} do
@@ -104,7 +104,7 @@ defmodule ChDriver.ParamsTest do
                Connection.query(
                  conn,
                  "SELECT {d:Decimal64(9)}",
-                 params: [{"d", Protocol.param_text(decimal)}]
+                 params: [{"d", Params.text(decimal)}]
                )
 
       assert [[result]] = rows
@@ -118,7 +118,7 @@ defmodule ChDriver.ParamsTest do
                Connection.query(
                  conn,
                  "SELECT {d:DateTime}",
-                 params: [{"d", Protocol.param_text(naive)}]
+                 params: [{"d", Params.text(naive)}]
                )
 
       assert [[result]] = rows
@@ -134,17 +134,17 @@ defmodule ChDriver.ParamsTest do
                Connection.query(
                  conn,
                  "SELECT {a:Array(String)}",
-                 params: [{"a", Protocol.param_text(list), Protocol.escape_rounds(list)}]
+                 params: [{"a", Params.text(list), Params.escape_rounds(list)}]
                )
 
       assert rows == [[list]]
     end
 
     test "escape_rounds/1 distinguishes lists from scalars" do
-      assert Protocol.escape_rounds(["a", "b"]) == 1
-      assert Protocol.escape_rounds([]) == 1
-      assert Protocol.escape_rounds("plain string") == 2
-      assert Protocol.escape_rounds(5) == 2
+      assert Params.escape_rounds(["a", "b"]) == 1
+      assert Params.escape_rounds([]) == 1
+      assert Params.escape_rounds("plain string") == 2
+      assert Params.escape_rounds(5) == 2
     end
   end
 end
