@@ -98,6 +98,22 @@ jobs:
             ch_driver/native/ch_driver_native/target
           key: ${{ runner.os }}-cargo-${{ hashFiles('ch_driver/Cargo.lock') }}
 
+      # RustlerPrecompiled requires checksum-Elixir.ChDriver.Codec.Native.exs
+      # (gitignored, generated here) to already exist before it will trust
+      # any NIF, downloaded or locally built -- a fresh checkout has none.
+      # FORCE_COMPILE=1 makes this invocation's implicit local build bypass
+      # that check for its own target; --all then downloads and checksums
+      # every other target from the ch_driver-v0.1.0 GitHub release. Must
+      # run with ch_driver as its own working directory (its own `deps.get`
+      # too, separate from clickhouse_adapter_ecto's path dependency on it
+      # below) -- the checksum file is written relative to cwd, and
+      # ch_driver's own `native.ex` only looks for it under ch_driver/.
+      - name: Generate ch_driver's NIF checksum file
+        working-directory: ch_driver
+        run: |
+          mix deps.get
+          FORCE_COMPILE=1 mix rustler_precompiled.download ChDriver.Codec.Native --all --print
+
       - run: mix deps.get
       - run: mix format --check-formatted
       - run: mix compile --warnings-as-errors

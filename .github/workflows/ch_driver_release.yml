@@ -134,8 +134,14 @@ jobs:
       # published above and writes checksum-Elixir.ChDriver.Codec.Native.exs,
       # which `package.files` (ch_driver/mix.exs) includes in the Hex
       # package so RustlerPrecompiled can verify downloads at install time.
+      # FORCE_COMPILE=1: RustlerPrecompiled requires that checksum file to
+      # already exist before it will trust any NIF, downloaded or locally
+      # built -- a fresh checkout has none, so without this the implicit
+      # compile this task triggers fails before the download logic runs.
       - name: Fetch precompiled NIFs and generate checksums
         run: mix rustler_precompiled.download ChDriver.Codec.Native --all --print
+        env:
+          FORCE_COMPILE: "1"
 
       - run: mix hex.publish --yes
         env:

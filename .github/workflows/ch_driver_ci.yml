@@ -64,6 +64,14 @@ jobs:
 
       - run: mix deps.get
       - run: mix format --check-formatted
+
+      # RustlerPrecompiled requires checksum-Elixir.ChDriver.Codec.Native.exs
+      # (gitignored, generated here) to already exist before it will trust
+      # any NIF, downloaded or locally built -- a fresh checkout has none.
+      # FORCE_COMPILE=1 makes this invocation's implicit local build bypass
+      # that check for its own target; --all then downloads and checksums
+      # every other target from the ch_driver-v0.1.0 GitHub release.
+      - run: FORCE_COMPILE=1 mix rustler_precompiled.download ChDriver.Codec.Native --all --print
       - run: mix compile --warnings-as-errors
       - run: mix test
 

@@ -47,6 +47,14 @@ defmodule ClickhouseAdapterEcto.MixProject do
     [
       {:ecto, "~> 3.0"},
       {:ecto_sql, "~> 3.0"},
+      # An optional dependency declared only by ch_driver (its own NIF's
+      # force-build fallback) isn't fetched/compiled as part of *this*
+      # umbrella build unless something in this project's own deps list
+      # also names it -- needed for CI's `FORCE_COMPILE=1 mix
+      # rustler_precompiled.download` checksum-generation step (see
+      # clickhouse_adapter_ecto_ci.yml), which forces a local Rust build of
+      # ch_driver's NIF for the runner's own target.
+      {:rustler, ">= 0.0.0", optional: true},
       ch_driver_dep()
     ]
   end
