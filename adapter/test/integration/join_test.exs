@@ -22,9 +22,19 @@ defmodule Ecto.Adapters.ClickHouse.JoinIntegrationTest do
   updated error message in `QueryBuilder.delete_all/1`.
 
   Requires `docker compose up -d` (from `adapter/`) to have been run first.
+
+  Test isolation here uses `Ecto.Adapters.ClickHouse.TestCase` (see its
+  moduledoc for the full rationale) instead of the hand-rolled
+  `setup_all`/`setup`/`on_exit` boilerplate every other file in this
+  directory still has: `Ecto.Adapter.Transaction` (and therefore
+  `Ecto.Adapters.SQL.Sandbox`) doesn't work against this adapter --
+  confirmed empirically, `Repo.transaction/2` raises a
+  `DBConnection.ConnectionError` -- so this is a shared-table,
+  `TRUNCATE`-before-each-test reset instead of a rolled-back transaction.
   """
 
   use ExUnit.Case, async: false
+  import Ecto.Adapters.ClickHouse.TestCase
 
   @moduletag :integration
 
@@ -55,50 +65,11 @@ defmodule Ecto.Adapters.ClickHouse.JoinIntegrationTest do
     end
   end
 
-  setup_all do
-    {:ok, _pid} =
-      TestRepo.start_link(
-        hostname: "localhost",
-        port: 9000,
-        database: "default",
-        username: "default",
-        password: "",
-        pool_size: 2
-      )
-
-    {:ok, ddl_conn} = ChDriver.start_link(hostname: "localhost", port: 9000)
-
-    {:ok, _} = ChDriver.query(ddl_conn, "DROP TABLE IF EXISTS join_comments")
-    {:ok, _} = ChDriver.query(ddl_conn, "DROP TABLE IF EXISTS join_posts")
-
-    {:ok, _} =
-      ChDriver.query(
-        ddl_conn,
-        "CREATE TABLE join_posts (id UInt64, title String) ENGINE = MergeTree ORDER BY id"
-      )
-
-    {:ok, _} =
-      ChDriver.query(
-        ddl_conn,
-        "CREATE TABLE join_comments (id UInt64, post_id UInt64, body String) " <>
-          "ENGINE = MergeTree ORDER BY id"
-      )
-
-    on_exit(fn ->
-      {:ok, conn} = ChDriver.start_link(hostname: "localhost", port: 9000)
-      ChDriver.query(conn, "DROP TABLE IF EXISTS join_comments")
-      ChDriver.query(conn, "DROP TABLE IF EXISTS join_posts")
-    end)
-
-    :ok
-  end
-
-  setup do
-    {:ok, conn} = ChDriver.start_link(hostname: "localhost", port: 9000)
-    {:ok, _} = ChDriver.query(conn, "TRUNCATE TABLE join_posts")
-    {:ok, _} = ChDriver.query(conn, "TRUNCATE TABLE join_comments")
-    :ok
-  end
+  setup_clickhouse_tables TestRepo,
+    join_posts: "CREATE TABLE join_posts (id UInt64, title String) ENGINE = MergeTree ORDER BY id",
+    join_comments:
+      "CREATE TABLE join_comments (id UInt64, post_id UInt64, body String) " <>
+        "ENGINE = MergeTree ORDER BY id"
 
   defp seed do
     TestRepo.insert!(%Post{id: 1, title: "first post"})
