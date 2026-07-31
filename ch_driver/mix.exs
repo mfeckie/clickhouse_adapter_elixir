@@ -12,6 +12,7 @@ defmodule ChDriver.MixProject do
       version: @version,
       elixir: "~> 1.19",
       start_permanent: Mix.env() == :prod,
+      elixirc_paths: elixirc_paths(Mix.env()),
       deps: deps(),
       description:
         "DBConnection driver speaking ClickHouse's native TCP protocol, including its " <>
@@ -19,6 +20,9 @@ defmodule ChDriver.MixProject do
       package: package()
     ]
   end
+
+  defp elixirc_paths(:test), do: ["lib", "test/support"]
+  defp elixirc_paths(_), do: ["lib"]
 
   defp package do
     [

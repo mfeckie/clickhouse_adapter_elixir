@@ -1,15 +1,15 @@
 defmodule ChDriver.QueryTest do
   use ExUnit.Case, async: true
 
+  import ChDriver.TestCase
+
   alias ChDriver.Connection
   alias ChDriver.Error
 
   @moduletag :integration
 
   setup do
-    {:ok, conn} = Connection.connect()
-    on_exit(fn -> Connection.close(conn.socket) end)
-    %{conn: conn}
+    setup_connection()
   end
 
   describe "query/2 against a live ClickHouse server" do

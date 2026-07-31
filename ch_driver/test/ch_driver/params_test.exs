@@ -1,15 +1,15 @@
 defmodule ChDriver.ParamsTest do
   use ExUnit.Case, async: true
 
+  import ChDriver.TestCase
+
   alias ChDriver.Connection
   alias ChDriver.Params
 
   @moduletag :integration
 
   setup do
-    {:ok, conn} = Connection.connect()
-    on_exit(fn -> Connection.close(conn.socket) end)
-    %{conn: conn}
+    setup_connection()
   end
 
   describe "Connection.query/3 with :params against a live ClickHouse server" do

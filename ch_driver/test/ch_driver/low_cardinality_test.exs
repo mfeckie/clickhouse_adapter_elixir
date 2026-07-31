@@ -11,18 +11,12 @@ defmodule ChDriver.LowCardinalityTest do
 
   use ExUnit.Case, async: true
 
+  import ChDriver.TestCase
+
   @moduletag :integration
 
   setup do
-    {:ok, conn} = ChDriver.start_link(hostname: "localhost", port: 9000)
-    table = "ch_driver_low_cardinality_test_#{System.unique_integer([:positive])}"
-
-    on_exit(fn ->
-      {:ok, conn} = ChDriver.start_link(hostname: "localhost", port: 9000)
-      ChDriver.query(conn, "DROP TABLE IF EXISTS #{table}")
-    end)
-
-    %{conn: conn, table: table}
+    setup_table("low_cardinality")
   end
 
   test "a LowCardinality(String) column with repeated values round-trips correctly (small, UInt8-tier dictionary)",

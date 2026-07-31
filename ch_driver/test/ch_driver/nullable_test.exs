@@ -10,18 +10,12 @@ defmodule ChDriver.NullableTest do
 
   use ExUnit.Case, async: true
 
+  import ChDriver.TestCase
+
   @moduletag :integration
 
   setup do
-    {:ok, conn} = ChDriver.start_link(hostname: "localhost", port: 9000)
-    table = "ch_driver_nullable_test_#{System.unique_integer([:positive])}"
-
-    on_exit(fn ->
-      {:ok, conn} = ChDriver.start_link(hostname: "localhost", port: 9000)
-      ChDriver.query(conn, "DROP TABLE IF EXISTS #{table}")
-    end)
-
-    %{conn: conn, table: table}
+    setup_table("nullable")
   end
 
   test "a Nullable(UInt32) column round-trips NULL and non-null values through a real table", %{

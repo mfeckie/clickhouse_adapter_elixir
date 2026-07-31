@@ -25,18 +25,12 @@ defmodule ChDriver.SparseTest do
 
   use ExUnit.Case, async: true
 
+  import ChDriver.TestCase
+
   @moduletag :integration
 
   setup do
-    {:ok, conn} = ChDriver.start_link(hostname: "localhost", port: 9000)
-    table = "ch_driver_sparse_test_#{System.unique_integer([:positive])}"
-
-    on_exit(fn ->
-      {:ok, conn} = ChDriver.start_link(hostname: "localhost", port: 9000)
-      ChDriver.query(conn, "DROP TABLE IF EXISTS #{table}")
-    end)
-
-    %{conn: conn, table: table}
+    setup_table("sparse")
   end
 
   # Asserts that `column` on `table` is genuinely stored with `Sparse`

@@ -9,18 +9,12 @@ defmodule ChDriver.DecimalTest do
 
   use ExUnit.Case, async: true
 
+  import ChDriver.TestCase
+
   @moduletag :integration
 
   setup do
-    {:ok, conn} = ChDriver.start_link(hostname: "localhost", port: 9000)
-    table = "ch_driver_decimal_test_#{System.unique_integer([:positive])}"
-
-    on_exit(fn ->
-      {:ok, conn} = ChDriver.start_link(hostname: "localhost", port: 9000)
-      ChDriver.query(conn, "DROP TABLE IF EXISTS #{table}")
-    end)
-
-    %{conn: conn, table: table}
+    setup_table("decimal")
   end
 
   test "a Decimal(18, 4) column round-trips positive, negative, and near-zero values", %{

@@ -11,18 +11,12 @@ defmodule ChDriver.FixedStringTest do
 
   use ExUnit.Case, async: true
 
+  import ChDriver.TestCase
+
   @moduletag :integration
 
   setup do
-    {:ok, conn} = ChDriver.start_link(hostname: "localhost", port: 9000)
-    table = "ch_driver_fixed_string_test_#{System.unique_integer([:positive])}"
-
-    on_exit(fn ->
-      {:ok, conn} = ChDriver.start_link(hostname: "localhost", port: 9000)
-      ChDriver.query(conn, "DROP TABLE IF EXISTS #{table}")
-    end)
-
-    %{conn: conn, table: table}
+    setup_table("fixed_string")
   end
 
   test "a FixedString(5) column round-trips a short value with its null-byte padding preserved verbatim",
