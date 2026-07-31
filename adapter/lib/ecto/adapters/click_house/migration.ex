@@ -25,7 +25,7 @@ defmodule Ecto.Adapters.ClickHouse.Migration do
       add(:status, ClickHouse.Migration.low_cardinality(:string))
 
   Both still produce exactly the same quoted-atom value the escape hatch
-  always accepted (see `Ecto.Adapters.ClickHouse.Connection.column_type!/1`)
+  always accepted (see `Ecto.Adapters.ClickHouse.DDL.column_type!/1`)
   -- there's no other legal way to hand `add/3` a ClickHouse-specific type
   string -- but the parameter is checked here instead of only surfacing as
   a cryptic ClickHouse DDL error at migration time.
@@ -59,7 +59,7 @@ defmodule Ecto.Adapters.ClickHouse.Migration do
   data as a normal table -- revisit if a concrete use case needs it.
   """
 
-  alias Ecto.Adapters.ClickHouse.Connection
+  alias Ecto.Adapters.ClickHouse.DDL
 
   @doc """
   Builds the quoted-atom migration type for `FixedString(size)`.
@@ -80,7 +80,7 @@ defmodule Ecto.Adapters.ClickHouse.Migration do
   @doc """
   Builds the quoted-atom migration type for `LowCardinality(inner_type)`,
   where `inner_type` is any Ecto type
-  `Ecto.Adapters.ClickHouse.Connection.column_type!/1` already knows how to
+  `Ecto.Adapters.ClickHouse.DDL.column_type!/1` already knows how to
   map to a ClickHouse column type (e.g. `:string`, `:integer`, `:uuid`,
   `{:array, :string}`).
 
@@ -91,6 +91,6 @@ defmodule Ecto.Adapters.ClickHouse.Migration do
   """
   @spec low_cardinality(term()) :: atom()
   def low_cardinality(inner_type) do
-    :"LowCardinality(#{Connection.column_type!(inner_type)})"
+    :"LowCardinality(#{DDL.column_type!(inner_type)})"
   end
 end
