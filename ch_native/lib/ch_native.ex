@@ -5,9 +5,10 @@ defmodule ChNative do
 
   See `ChNative.Block` for compressed block envelope encoding/decoding.
 
-  Not currently wired into `ch_driver`: `ChDriver.Protocol.encode_query/2`
-  always negotiates compression off, so this library's encode/decode paths
-  are unreachable at runtime today. See `ChNative.Block`'s moduledoc for
-  details and the tracking issue for wiring it up.
+  Wired into `ch_driver` as opt-in wire compression: `ChDriver.Connection.connect/1`
+  and `query/3` accept a `:compression` option (`:none` by default, or `:lz4`),
+  which threads through to `ChDriver.Protocol.encode_query/2`,
+  `encode_empty_data_packet/1`, and `decode_packet/2` -- see `ChNative.Block`'s
+  moduledoc for exactly which call sites use it.
   """
 end

@@ -1,6 +1,6 @@
 defmodule ChCodec do
   @moduledoc """
-  LZ4 block compression and CityHash v1.0.3 checksums for ClickHouse's
+  LZ4 block compression and CityHash v1.0.2 checksums for ClickHouse's
   native protocol block framing.
 
   ClickHouse wraps every block (compressed or not) in a fixed envelope:
@@ -34,7 +34,7 @@ defmodule ChCodec do
   end
 
   @doc """
-  Computes the 128-bit CityHash v1.0.3 checksum of `data`, returned as a
+  Computes the 128-bit CityHash v1.0.2 checksum of `data`, returned as a
   16-byte binary already in ClickHouse's on-wire byte order.
   """
   @spec cityhash128(iodata) :: <<_::128>>

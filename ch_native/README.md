@@ -18,21 +18,17 @@ any unconsumed trailing bytes so callers can loop over back-to-back blocks.
 Both are backed by [`ch_codec`](../ch_codec)'s NIFs -- `ChCodec.lz4_compress/1`
 /`lz4_decompress/2` for the raw (headerless) LZ4 block format ClickHouse
 uses, and `ChCodec.cityhash128/1` for the checksum, computed with the exact
-CityHash v1.0.3 constants ClickHouse itself uses (not today's CityHash).
+CityHash v1.0.2 constants ClickHouse itself uses (not today's CityHash).
 
-## Currently unwired scaffolding
+## Wired into ch_driver as opt-in compression
 
-Neither `encode/2` nor `decode/1` is called anywhere in
-[`ch_driver`](../ch_driver) today. `ChDriver.Protocol.encode_query/2`
-hardcodes compression off, so both outbound and inbound Data blocks are
-sent/received as plain, un-enveloped Native blocks rather than through this
-module -- see `ChNative.Block`'s own moduledoc for the exact call sites. This
-is intentional scaffolding for a future compression-negotiation feature
-(LZ4-on-the-wire is a real win for large result sets), not dead code left
-over from something removed. Wiring it up -- negotiating compression with the
-server's Hello response, updating the receive-side decode dispatch, and
-integration-testing against live ClickHouse with compression enabled -- is
-tracked as a follow-up.
+Both `encode/2` and `decode/1` are called from [`ch_driver`](../ch_driver),
+gated behind its `:compression` option (`:none` by default, `:lz4` to opt
+in). `ChDriver.Protocol.Messages.encode_query/2` negotiates compression with
+the server via the Query packet's compression flag; outbound and inbound
+Data/ProfileEvents blocks are then routed through `encode/2`/`decode/1`
+respectively -- see `ChNative.Block`'s own moduledoc for the exact call
+sites.
 
 ## Relationship to ch_codec
 

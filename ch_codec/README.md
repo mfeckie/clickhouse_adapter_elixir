@@ -1,6 +1,6 @@
 # ChCodec
 
-A small Rust NIF that gives Elixir two things ClickHouse's native protocol needs: raw LZ4 block compression and CityHash v1.0.3 checksums.
+A small Rust NIF that gives Elixir two things ClickHouse's native protocol needs: raw LZ4 block compression and CityHash v1.0.2 checksums.
 
 Used by [clickhouse_adapter_elixir](https://github.com/mfeckie/clickhouse_adapter_elixir) to talk to ClickHouse over its native TCP protocol, instead of HTTP.
 
@@ -20,7 +20,7 @@ Two things about this envelope make it awkward to build from off-the-shelf packa
 
 First, the LZ4 here isn't the LZ4 Frame format you get from the `lz4` command line tool. It's the raw LZ4 block format, with no header of its own. ClickHouse supplies its own header instead (the four fields above).
 
-Second, the checksum isn't today's CityHash. ClickHouse froze on CityHash v1.0.3 years ago, and the algorithm's internal constants have changed since. A generic "cityhash" library on your package manager of choice will almost certainly give you the wrong answer. You need the exact old version.
+Second, the checksum isn't today's CityHash. ClickHouse froze on CityHash v1.0.2 years ago -- a different, older algorithm than the v1.0.3 that most modern "cityhash" packages implement, not just a different byte-packing of the same hash. The two only agree for short inputs and diverge once the input exceeds roughly 64 bytes, so a generic "cityhash" library on your package manager of choice will silently give you the wrong answer for any real payload. You need the exact old version.
 
 ChCodec handles both, and packs the checksum into the exact byte order ClickHouse expects on the wire.
 
@@ -39,7 +39,7 @@ checksum = ChCodec.cityhash128(data)
 # <<...16 bytes...>>
 ```
 
-`cityhash128/1` is checked against Google's own published CityHash v1.0.3 test vectors, so you're not just trusting our word for it.
+`cityhash128/1` is checked against Google's own published CityHash v1.0.2 test vectors, so you're not just trusting our word for it.
 
 ## Installation
 

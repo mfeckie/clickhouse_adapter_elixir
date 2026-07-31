@@ -15,28 +15,19 @@ defmodule ChNative.Block do
   framing -- callers should call `decode/1` repeatedly, threading the
   returned `rest` through, until the buffer is exhausted.
 
-  ## Not currently wired into ChDriver
+  ## Wired into ChDriver as opt-in compression
 
-  Neither `encode/2` nor `decode/1` is called anywhere in `ch_driver` today.
-  `ChDriver.Protocol.encode_query/2` hardcodes
-  `@compression_disabled 0` (`ch_driver/lib/ch_driver/protocol.ex:210`,
-  emitted at line 265) and always negotiates compression off, so both
-  outbound and inbound Data blocks are sent/received as plain, un-enveloped
-  Native blocks (see `ch_driver/lib/ch_driver/protocol/native_block.ex`)
-  rather than through this module. The receive-side dispatcher
-  (`ChDriver.Protocol.decode_packet/1` ->
-  `ChDriver.Protocol.NativeBlock.decode_data_packet/1`) never calls this
-  module's `decode/1` either.
-
-  This module (and the `ch_codec` NIFs it wraps) exist as scaffolding for a
-  future compression-negotiation feature, not dead code left over from a
-  removed feature -- LZ4-on-the-wire is a real win for large result sets and
-  is worth doing eventually, but negotiating it is a multi-hour feature
-  (protocol negotiation with the server's Hello response, updated decode
-  dispatch, integration tests against live ClickHouse with compression
-  enabled) that was intentionally scoped out of the code-organization
-  refactor that audited this module. Tracked as a follow-up in
-  `clickhouse_adapter_elixir-szk.11`.
+  Both `encode/2` and `decode/1` are called from `ch_driver`, gated behind
+  its `:compression` option (`:none` by default, `:lz4` to opt in):
+  `ChDriver.Protocol.Messages.encode_query/2` negotiates compression with the
+  server via the Query packet's compression flag, `encode_empty_data_packet/1`
+  routes the outbound external-table block through `encode/2` when enabled,
+  and `ChDriver.Protocol.decode_packet/2` ->
+  `ChDriver.Protocol.NativeBlock.decode_data_packet/2` routes inbound
+  Data/ProfileEvents blocks through `decode/1` the same way. See
+  `ChDriver.Connection`'s `:compression` option docs for the client-facing
+  API and `ChDriver.Protocol.Messages.encode_query/2`'s moduledoc for the
+  wire-level negotiation details.
   """
 
   @checksum_size 16
