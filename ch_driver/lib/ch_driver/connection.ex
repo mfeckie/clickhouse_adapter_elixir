@@ -68,7 +68,7 @@ defmodule ChDriver.Connection do
            %{
              socket: :gen_tcp.socket(),
              server_info: Protocol.ServerHello.t(),
-             compression: ChNative.Block.method()
+             compression: ChDriver.Protocol.Block.Compressed.method()
            }}
           | {:error, term}
   def connect(opts \\ []) do

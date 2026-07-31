@@ -6,7 +6,9 @@ defmodule ChDriver.Protocol.MessagesTest do
   describe "encode_query/2 compression byte, in isolation from a live server" do
     test "omitting :compression is byte-for-byte identical to explicitly passing :compression: :none" do
       omitted = Messages.encode_query("SELECT 1") |> IO.iodata_to_binary()
-      explicit_none = Messages.encode_query("SELECT 1", compression: :none) |> IO.iodata_to_binary()
+
+      explicit_none =
+        Messages.encode_query("SELECT 1", compression: :none) |> IO.iodata_to_binary()
 
       assert omitted == explicit_none
     end
@@ -46,7 +48,7 @@ defmodule ChDriver.Protocol.MessagesTest do
       assert omitted == explicit_none
     end
 
-    test ":lz4 wraps the block body in a ChNative.Block envelope, changing its size" do
+    test ":lz4 wraps the block body in a ChDriver.Protocol.Block.Compressed envelope, changing its size" do
       plain = Messages.encode_empty_data_packet(:none) |> IO.iodata_to_binary()
       compressed = Messages.encode_empty_data_packet(:lz4) |> IO.iodata_to_binary()
 
@@ -57,7 +59,7 @@ defmodule ChDriver.Protocol.MessagesTest do
       assert binary_part(plain, 0, 2) == binary_part(compressed, 0, 2)
 
       # Immediately after that 2-byte plain prefix, the compressed version
-      # carries a ChNative.Block envelope: 16-byte checksum then method
+      # carries a ChDriver.Protocol.Block.Compressed envelope: 16-byte checksum then method
       # byte 0x82 (LZ4).
       <<_prefix::binary-size(2), _checksum::binary-size(16), method::8, _rest::binary>> =
         compressed

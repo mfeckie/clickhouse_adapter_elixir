@@ -3,9 +3,9 @@ name: ch_driver CI
 on:
   push:
     branches: [main]
-    paths: ["ch_codec/**", "ch_native/**", "ch_driver/**", ".github/workflows/ch_driver_ci.yml"]
+    paths: ["ch_driver/**", ".github/workflows/ch_driver_ci.yml"]
   pull_request:
-    paths: ["ch_codec/**", "ch_native/**", "ch_driver/**", ".github/workflows/ch_driver_ci.yml"]
+    paths: ["ch_driver/**", ".github/workflows/ch_driver_ci.yml"]
 
 jobs:
   test:
@@ -50,23 +50,34 @@ jobs:
         uses: actions/cache@v4
         with:
           path: |
-            ch_codec/deps
-            ch_codec/_build
-            ch_native/deps
-            ch_native/_build
             ch_driver/deps
             ch_driver/_build
-          key: ${{ runner.os }}-mix-${{ hashFiles('ch_codec/mix.lock', 'ch_native/mix.lock', 'ch_driver/mix.lock') }}
+          key: ${{ runner.os }}-mix-${{ hashFiles('ch_driver/mix.lock') }}
 
       - name: Cache cargo registry & build
         uses: actions/cache@v4
         with:
           path: |
             ~/.cargo/registry
-            ch_codec/native/chcodec_native/target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('ch_codec/Cargo.lock') }}
+            ch_driver/native/ch_driver_native/target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('ch_driver/Cargo.lock') }}
 
       - run: mix deps.get
       - run: mix format --check-formatted
+
+      # TEMPORARY: no ch_driver-v* GitHub release with precompiled NIF
+      # binaries exists yet (this project was just renamed/consolidated from
+      # ch_codec+ch_native -- see RELEASING.md), so RustlerPrecompiled's
+      # normal download would 404. Force a local Rust build instead, same as
+      # this workflow's own Rust toolchain setup above already supports.
+      # Remove this once the first real ch_driver-v* tag has been released.
       - run: mix compile --warnings-as-errors
+        env:
+          RUSTLER_PRECOMPILED_FORCE_BUILD_ALL: "1"
       - run: mix test
+        env:
+          RUSTLER_PRECOMPILED_FORCE_BUILD_ALL: "1"
+
+      - name: cargo test
+        working-directory: ch_driver/native/ch_driver_native
+        run: cargo test

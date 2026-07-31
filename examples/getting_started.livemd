@@ -55,17 +55,16 @@ you're also using for other things.
 
 ## Installing dependencies
 
-None of `clickhouse_adapter_elixir`, `ch_driver`, `ch_native`, or
-`ch_codec` are published to Hex yet, so this notebook installs them as
-local path dependencies, relative to this file's location
-(`examples/getting_started.livemd`) in the repo:
+Neither `clickhouse_adapter_elixir` nor `ch_driver` are published to Hex
+yet, so this notebook installs them as local path dependencies, relative to
+this file's location (`examples/getting_started.livemd`) in the repo:
 
 ```
 clickhouse_adapter_elixir/
 ├── adapter/       <- Ecto.Adapters.ClickHouse (app: :clickhouse_adapter_elixir)
-├── ch_driver/      <- native-protocol DBConnection driver (app: :ch_driver)
-├── ch_native/      <- compressed block envelope (app: :ch_native, pulled in transitively)
-├── ch_codec/       <- Rust NIF for LZ4 + CityHash (app: :ch_codec, pulled in transitively)
+├── ch_driver/     <- native-protocol DBConnection driver, including its
+│                     LZ4/CityHash compression NIF and compressed-block
+│                     wire envelope (app: :ch_driver)
 └── examples/
     └── getting_started.livemd   <- you are here
 ```

@@ -1,5 +1,5 @@
 [package]
-name = "chcodec_native"
+name = "ch_driver_native"
 version = "0.1.0"
 authors = []
 edition = "2021"

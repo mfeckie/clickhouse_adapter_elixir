@@ -69,7 +69,7 @@ fn binary_from_vec(env: Env<'_>, bytes: Vec<u8>) -> Binary<'_> {
     owned.release(env)
 }
 
-rustler::init!("Elixir.ChCodec.Native");
+rustler::init!("Elixir.ChDriver.Codec.Native");
 
 #[cfg(test)]
 mod tests {

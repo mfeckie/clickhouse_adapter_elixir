@@ -8,7 +8,7 @@ defmodule ChDriver.Protocol.NativeBlock do
   `:compression` opt, `:none` by default). When it's off, blocks arrive
   exactly as described below. When a query negotiates `:lz4` compression,
   `decode_data_packet/2` routes the block body through
-  `ChNative.Block.decode/1` first and hands this module the decompressed
+  `ChDriver.Protocol.Block.Compressed.decode/1` first and hands this module the decompressed
   bytes -- the format below is unchanged either way, since compression is
   just an envelope around the same plain Native block bytes.
 
@@ -82,10 +82,10 @@ defmodule ChDriver.Protocol.NativeBlock do
   When `compression` is `:none` (the default), the block that follows is
   decoded as plain bytes, exactly as before. When `compression` is
   `:lz4`, the bytes following the external table name are first routed
-  through `ChNative.Block.decode/1` -- a single compressed envelope wraps
+  through `ChDriver.Protocol.Block.Compressed.decode/1` -- a single compressed envelope wraps
   exactly one block's worth of bytes (BlockInfo + columns + rows), so the
   decompressed payload is handed to `decode_block/1` as-is, and whatever
-  `ChNative.Block.decode/1` reports as unconsumed trailing bytes (`rest`)
+  `ChDriver.Protocol.Block.Compressed.decode/1` reports as unconsumed trailing bytes (`rest`)
   is returned as this packet's `rest` -- it is the start of the *next*
   packet (a fresh packet-type varint), not necessarily another compressed
   envelope, since only block bodies are ever wrapped.
@@ -93,7 +93,7 @@ defmodule ChDriver.Protocol.NativeBlock do
   Returns `{:ok, %{table_name:, columns:, rows:}, rest}`,
   `{:incomplete, binary}`, or `{:error, reason}`.
   """
-  @spec decode_data_packet(binary, ChNative.Block.method()) ::
+  @spec decode_data_packet(binary, ChDriver.Protocol.Block.Compressed.method()) ::
           {:ok, map, binary} | {:incomplete, binary} | {:error, term}
   def decode_data_packet(binary, compression \\ :none) do
     with {:ok, table_name, rest} <- Varint.decode_string(binary),
@@ -108,7 +108,7 @@ defmodule ChDriver.Protocol.NativeBlock do
   defp decode_block_body(binary, :none), do: decode_block(binary)
 
   defp decode_block_body(binary, :lz4) do
-    case ChNative.Block.decode(binary) do
+    case ChDriver.Protocol.Block.Compressed.decode(binary) do
       {:ok, decompressed, rest} ->
         with {:ok, block, <<>>} <- decode_block(decompressed) do
           {:ok, block, rest}

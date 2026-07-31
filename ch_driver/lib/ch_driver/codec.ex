@@ -1,4 +1,4 @@
-defmodule ChCodec do
+defmodule ChDriver.Codec do
   @moduledoc """
   LZ4 block compression and CityHash v1.0.2 checksums for ClickHouse's
   native protocol block framing.
@@ -15,9 +15,13 @@ defmodule ChCodec do
   envelope: `lz4_compress/1` and `lz4_decompress/2` operate on the raw LZ4
   block format (not the LZ4 Frame format), and `cityhash128/1` returns the
   16-byte checksum already packed in ClickHouse's on-wire byte order.
+
+  This is the Rust-NIF-backed half of `ch_driver`'s compressed block
+  envelope support; see `ChDriver.Protocol.Block.Compressed` for the pure
+  Elixir envelope encoding/decoding built on top of these primitives.
   """
 
-  alias ChCodec.Native
+  alias ChDriver.Codec.Native
 
   @doc "Compresses `data` using raw LZ4 block compression (no frame header)."
   @spec lz4_compress(iodata) :: binary

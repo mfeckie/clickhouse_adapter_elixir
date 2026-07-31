@@ -5,7 +5,7 @@ defmodule ChDriver.Protocol do
 
   The Hello exchange (ClientHello sent, ServerHello received) happens in
   plaintext -- unlike Query/Data packets, it is never wrapped in a
-  `ChNative.Block` compressed envelope.
+  `ChDriver.Protocol.Block.Compressed` compressed envelope.
 
   This module owns packet-type dispatch (`decode_packet/1`), the
   ClientHello/ServerHello struct definitions, and revision-gating
@@ -149,7 +149,7 @@ defmodule ChDriver.Protocol do
   this query. See `ChDriver.Protocol.Messages.encode_empty_data_packet/1`
   for the wire layout.
   """
-  @spec encode_empty_data_packet(ChNative.Block.method()) :: iodata
+  @spec encode_empty_data_packet(ChDriver.Protocol.Block.Compressed.method()) :: iodata
   def encode_empty_data_packet(compression \\ :none) do
     Messages.encode_empty_data_packet(compression)
   end
@@ -194,7 +194,7 @@ defmodule ChDriver.Protocol do
   `compression` (`:none` (default) or `:lz4`) must match whatever was
   negotiated for this query via `encode_query/2`'s `:compression` opt --
   it only affects how Data packets' block bodies are decoded (routed
-  through `ChNative.Block.decode/1` first when `:lz4`).
+  through `ChDriver.Protocol.Block.Compressed.decode/1` first when `:lz4`).
 
   ProfileEvents (type 14) is deliberately excluded from that: verified
   live against ClickHouse 24.8 with compression negotiated on, the server
@@ -204,12 +204,12 @@ defmodule ChDriver.Protocol do
   stream rather than through the query's `maybe_compressed_out`. Forcing
   `:lz4` decoding onto it (as this driver's first cut at compression did)
   desyncs the stream right after the first ProfileEvents packet, since
-  ChNative.Block.decode/1 then waits forever for a compression envelope
+  ChDriver.Protocol.Block.Compressed.decode/1 then waits forever for a compression envelope
   header that was never written. So ProfileEvents is always decoded as
   `:none`, independent of `compression`; every other packet type (Progress,
   ProfileInfo, Exception, EndOfStream, Pong) was already plain regardless.
   """
-  @spec decode_packet(binary, ChNative.Block.method()) ::
+  @spec decode_packet(binary, ChDriver.Protocol.Block.Compressed.method()) ::
           {:ok, term, binary} | {:incomplete, binary} | {:error, term}
   def decode_packet(binary, compression \\ :none) when is_binary(binary) do
     case Varint.decode(binary) do

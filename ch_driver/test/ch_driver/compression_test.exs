@@ -5,8 +5,8 @@ defmodule ChDriver.CompressionTest do
 
   @moduletag :integration
 
-  # Formerly blocked on a CityHash version mismatch in `ChCodec.cityhash128/1`
-  # (see the NIF binding in ch_codec/native/chcodec_native/src/lib.rs for the
+  # Formerly blocked on a CityHash version mismatch in `ChDriver.Codec.cityhash128/1`
+  # (see the NIF binding in native/ch_driver_native/src/lib.rs for the
   # v1.0.2-vs-v1.0.3 story) -- now fixed, so the two previously-skipped tests
   # below are unskipped.
 
@@ -38,7 +38,7 @@ defmodule ChDriver.CompressionTest do
       # won't bother emitting the compressed envelope for a payload this
       # size unless the negotiated compression is actually wired up and
       # exercised, not just a code path that happens to no-op on tiny
-      # inputs. Currently blocked by the ch_codec checksum bug above (this
+      # inputs. Currently blocked by the codec's CityHash checksum bug above (this
       # payload is far larger than the ~64-byte coincidence threshold).
       assert {:ok, %{columns: columns, rows: rows}} =
                Connection.query(
@@ -101,16 +101,16 @@ defmodule ChDriver.CompressionTest do
   end
 
   describe "raw wire evidence that compression is actually negotiated and exercised" do
-    test "a Query packet declaring compression makes the server respond with ChNative.Block-enveloped Data blocks" do
+    test "a Query packet declaring compression makes the server respond with ChDriver.Protocol.Block.Compressed-enveloped Data blocks" do
       # This is the same reverse-engineering probe used to confirm the
       # negotiation mechanism against live ClickHouse: craft a Query packet
       # with the compression varint set to 1 (Enable), send the empty
-      # external-table Data packet wrapped in a ChNative.Block LZ4 envelope
+      # external-table Data packet wrapped in a ChDriver.Protocol.Block.Compressed LZ4 envelope
       # (as the server requires once compression is declared enabled), and
       # inspect the raw response bytes for the envelope's checksum/method
       # header rather than trusting the higher-level decode path. This does
-      # NOT depend on the ch_codec checksum bug above -- it only inspects
-      # raw bytes, it never calls `ChNative.Block.decode/1`.
+      # NOT depend on the codec's CityHash checksum bug above -- it only inspects
+      # raw bytes, it never calls `ChDriver.Protocol.Block.Compressed.decode/1`.
       assert {:ok, conn} = Connection.connect(compression: :lz4)
       on_exit(fn -> Connection.close(conn.socket) end)
 
@@ -127,18 +127,18 @@ defmodule ChDriver.CompressionTest do
       assert byte_size(raw) > 20
 
       # Server packet type 1 (Data), then external table name (empty
-      # string, one zero byte), then the ChNative.Block envelope: 16-byte
+      # string, one zero byte), then the ChDriver.Protocol.Block.Compressed envelope: 16-byte
       # CityHash128 checksum, then method byte 0x82 (LZ4) -- see
-      # `ChNative.Block`'s moduledoc for the envelope layout.
+      # `ChDriver.Protocol.Block.Compressed`'s moduledoc for the envelope layout.
       assert <<1, 0, _checksum::binary-size(16), 0x82, _rest::binary>> = raw
     end
   end
 
-  describe "regression coverage for the ch_codec cityhash bug" do
+  describe "regression coverage for the codec's CityHash bug" do
     test "a real compressed block's checksum verifies correctly, and LZ4 decompresses it" do
       # Captures one real compressed Data block (100 rows, well past the
       # ~64-byte threshold where CityHash v1.0.2/v1.0.3 diverge -- see
-      # ch_codec/native/chcodec_native/src/lib.rs's cityhash128/1 binding).
+      # native/ch_driver_native/src/lib.rs's cityhash128/1 binding).
       # Regression test: both the checksum must verify AND LZ4 must
       # decompress correctly.
       assert {:ok, conn} = Connection.connect(compression: :lz4)
@@ -156,7 +156,7 @@ defmodule ChDriver.CompressionTest do
       raw = recv_some(conn.socket, <<>>, 20)
 
       # Skip past the header (0-row) block: packet type + table name +
-      # ChNative.Block envelope, whose own compressed_size tells us how far
+      # ChDriver.Protocol.Block.Compressed envelope, whose own compressed_size tells us how far
       # to skip.
       <<1, 0, _checksum1::binary-size(16), _method1::8, header_compressed_size::little-32,
         _header_uncompressed_size::little-32, after_header_envelope::binary>> = raw
@@ -174,17 +174,17 @@ defmodule ChDriver.CompressionTest do
 
       assert method == 0x82
 
-      # The checksum comparison ChNative.Block.decode/1 performs internally
-      # -- reproduced here directly against ChCodec to confirm it now matches
+      # The checksum comparison ChDriver.Protocol.Block.Compressed.decode/1 performs internally
+      # -- reproduced here directly against ChDriver.Codec to confirm it now matches
       # on this real (non-tiny) block.
       envelope_header = <<method::8, compressed_size::little-32, uncompressed_size::little-32>>
-      computed_checksum = ChCodec.cityhash128([envelope_header, payload])
+      computed_checksum = ChDriver.Codec.cityhash128([envelope_header, payload])
       assert computed_checksum == checksum
 
       # LZ4 decompression itself, however, is completely unaffected: it
       # recovers exactly `uncompressed_size` bytes of plausible-looking
       # Native block data (starts with the expected BlockInfo bytes).
-      assert {:ok, decompressed} = ChCodec.lz4_decompress(payload, uncompressed_size)
+      assert {:ok, decompressed} = ChDriver.Codec.lz4_decompress(payload, uncompressed_size)
       assert byte_size(decompressed) == uncompressed_size
       assert <<1, 0, 2, -1::signed-little-32, 0, _rest::binary>> = decompressed
     end

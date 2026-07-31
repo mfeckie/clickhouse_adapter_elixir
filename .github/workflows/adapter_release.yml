@@ -1,15 +1,14 @@
 name: adapter release
 
 # Publishes clickhouse_adapter_elixir to Hex.pm when an adapter-v* tag is
-# pushed. Mirrors ch_codec's tag-prefix convention (see ch_codec_release.yml),
+# pushed. Mirrors ch_driver's tag-prefix convention (see ch_driver_release.yml),
 # using "adapter-v*" rather than the Hex package name as the tag prefix since
 # that's this project's directory/workflow-file naming within the monorepo.
 #
 # Publish order matters: adapter's Hex-resolved dependency on ch_driver (see
-# adapter/mix.exs, HEX_PUBLISH branch) means ch_codec, ch_native, and then
-# ch_driver must already be published at versions satisfying that chain of
-# constraints before this can succeed. See RELEASING.md for the full
-# ordering -- adapter is last.
+# adapter/mix.exs, HEX_PUBLISH branch) means ch_driver must already be
+# published at a version satisfying that constraint before this can succeed.
+# See RELEASING.md for the full ordering -- adapter is last.
 #
 # SAFETY: this workflow is only ever exercised for real when a maintainer
 # pushes a real adapter-v* tag with HEX_API_KEY configured as a repo secret.

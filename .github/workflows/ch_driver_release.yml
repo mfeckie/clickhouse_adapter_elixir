@@ -1,13 +1,19 @@
 name: ch_driver release
 
-# Publishes ch_driver to Hex.pm when a ch_driver-v* tag is pushed. Mirrors
-# ch_codec's tag-prefix convention (see ch_codec_release.yml).
+# Adapted from the reference workflow at
+# https://github.com/philss/rustler_precompilation_example/blob/main/.github/workflows/release.yml
+# for this repo's monorepo layout (ch_driver/ subdirectory) and its
+# `ch_driver-v*` tag prefix (see ch_driver/mix.exs -- ch_driver shares this
+# repo with the adapter, so releases are namespaced to avoid tag collisions).
 #
-# Publish order matters: ch_driver's Hex-resolved dependency on ch_native
-# (see ch_driver/mix.exs, HEX_PUBLISH branch) means ch_codec and then
-# ch_native must already be published at versions satisfying that chain of
-# constraints before this can succeed. See RELEASING.md for the full
-# ordering.
+# ch_driver owns both the NIF cross-compile-and-GitHub-release matrix (its
+# Rust crate, native/ch_driver_native, moved here as part of folding the
+# former ch_codec/ch_native packages into this one) and the Hex publish of
+# the package itself.
+#
+# Publish order: ch_driver is now the first (and only, besides adapter)
+# package in the publish chain (ch_driver -> adapter, see RELEASING.md), so
+# it has no upstream Hex dependency to worry about ordering against.
 #
 # SAFETY: this workflow is only ever exercised for real when a maintainer
 # pushes a real ch_driver-v* tag with HEX_API_KEY configured as a repo
@@ -20,27 +26,117 @@ on:
   workflow_dispatch: {}
 
 jobs:
+  build_release:
+    name: NIF ${{ matrix.nif }} - ${{ matrix.job.target }} (${{ matrix.job.os }})
+    runs-on: ${{ matrix.job.os }}
+    permissions:
+      # For creating a new release.
+      contents: write
+      # The following are needed for the "actions/attest" GH Action.
+      id-token: write
+      attestations: write
+      artifact-metadata: write
+    strategy:
+      fail-fast: false
+      matrix:
+        # Keep in sync with the `targets` list in ch_driver/lib/ch_driver/codec/native.ex.
+        nif: ["2.15"]
+        job:
+          - { target: aarch64-apple-darwin, os: macos-15 }
+          - { target: x86_64-apple-darwin, os: macos-15-intel }
+          - { target: aarch64-unknown-linux-gnu, os: ubuntu-22.04, use-cross: true }
+          - { target: aarch64-unknown-linux-musl, os: ubuntu-22.04, use-cross: true }
+          - { target: x86_64-unknown-linux-gnu, os: ubuntu-22.04 }
+          - { target: x86_64-unknown-linux-musl, os: ubuntu-22.04, use-cross: true }
+
+    steps:
+      - name: Checkout source code
+        uses: actions/checkout@v6
+
+      - name: Extract project version
+        shell: bash
+        run: |
+          echo "PROJECT_VERSION=$(sed -n 's/^  @version "\(.*\)"/\1/p' ch_driver/mix.exs | head -n1)" >> $GITHUB_ENV
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+          target: ${{ matrix.job.target }}
+
+      - name: Build the project
+        id: build-crate
+        uses: philss/rustler-precompiled-action@v1.1.5
+        with:
+          project-name: ch_driver_native
+          project-version: ${{ env.PROJECT_VERSION }}
+          target: ${{ matrix.job.target }}
+          nif-version: ${{ matrix.nif }}
+          use-cross: ${{ matrix.job.use-cross }}
+          project-dir: "ch_driver/native/ch_driver_native"
+          # native/ch_driver_native is a member of the ch_driver/Cargo.toml
+          # workspace, so cargo would otherwise place build output in the
+          # workspace root's target/ dir. The action's rename step expects
+          # it under <project-dir>/target/<triple>/release/, so force cargo
+          # to put it there instead of touching the workspace layout.
+          cargo-args: "--target-dir target"
+
+      - uses: actions/attest@v4
+        with:
+          subject-path: ${{ steps.build-crate.outputs.file-path }}
+
+      - name: Artifact upload
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ steps.build-crate.outputs.file-name }}
+          path: ${{ steps.build-crate.outputs.file-path }}
+
+      - name: Publish archives and packages
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            ${{ steps.build-crate.outputs.file-path }}
+
+  # Publishes ch_driver itself to Hex.pm, once every NIF target above has an
+  # asset attached to the GitHub release. This must run after build_release
+  # (not in parallel) since it downloads each of those release assets to
+  # compute the checksum file `mix hex.publish` bundles into the package
+  # (see ch_driver/mix.exs `package.files` and rustler_precompiled's docs) --
+  # publishing before the release assets exist would checksum nothing, or
+  # stale binaries.
+  #
+  # ch_driver is the first package in the publish chain (ch_driver -> adapter,
+  # see RELEASING.md) so it has no upstream Hex dependency to worry about
+  # ordering against.
+  #
+  # SAFETY: this job is only ever exercised for real when a maintainer
+  # pushes a real ch_driver-v* tag with HEX_API_KEY configured as a repo
+  # secret. Neither has been done as part of building this pipeline.
   hex_publish:
+    name: Publish ch_driver to Hex.pm
+    needs: build_release
     runs-on: ubuntu-22.04
     defaults:
       run:
         working-directory: ch_driver
     steps:
-      - uses: actions/checkout@v6
+      - name: Checkout source code
+        uses: actions/checkout@v6
 
       - uses: erlef/setup-beam@v1
         with:
           otp-version: "28"
           elixir-version: "1.19"
 
-      # Force the Hex-resolved dependency on ch_native (see the
-      # `ch_native_dep/0` branch in ch_driver/mix.exs) instead of this
-      # monorepo's local `path:` dep, which Hex packages cannot depend on.
       - run: mix deps.get
-        env:
-          HEX_PUBLISH: "true"
+
+      # Fetches every target's precompiled NIF from the GitHub release
+      # published above and writes checksum-Elixir.ChDriver.Codec.Native.exs,
+      # which `package.files` (ch_driver/mix.exs) includes in the Hex
+      # package so RustlerPrecompiled can verify downloads at install time.
+      - name: Fetch precompiled NIFs and generate checksums
+        run: mix rustler_precompiled.download ChDriver.Codec.Native --all --print
 
       - run: mix hex.publish --yes
         env:
-          HEX_PUBLISH: "true"
           HEX_API_KEY: ${{ secrets.HEX_API_KEY }}

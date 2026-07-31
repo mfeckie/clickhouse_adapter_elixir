@@ -214,7 +214,7 @@ defmodule ChDriver.Protocol.Messages do
       this varint to 1 (Enable) tells the server that *both directions* of
       this query's block traffic are compressed from here on: the server
       wraps every Data/ProfileEvents block it sends back in a
-      `ChNative.Block` compressed envelope, and it expects the client's own
+      `ChDriver.Protocol.Block.Compressed` compressed envelope, and it expects the client's own
       Data packets (e.g. the empty external-table block sent by
       `encode_empty_data_packet/1`) to arrive wrapped the same way --
       sending a plain block after declaring compression enabled leaves the
@@ -323,11 +323,11 @@ defmodule ChDriver.Protocol.Messages do
   rows) is ever wrapped. `compression` (`:none` (default) or `:lz4`) must
   match whatever was negotiated for this query via `encode_query/2`'s
   `:compression` opt -- when `:lz4`, the block body is routed through
-  `ChNative.Block.encode/2` before being sent, since the server (having
+  `ChDriver.Protocol.Block.Compressed.encode/2` before being sent, since the server (having
   been told compression is enabled in the preceding Query packet) expects
   this block wrapped in a compressed envelope, not sent plain.
   """
-  @spec encode_empty_data_packet(ChNative.Block.method()) :: iodata
+  @spec encode_empty_data_packet(ChDriver.Protocol.Block.Compressed.method()) :: iodata
   def encode_empty_data_packet(compression \\ :none) do
     block_body = [
       empty_block_info(),
@@ -343,7 +343,9 @@ defmodule ChDriver.Protocol.Messages do
   end
 
   defp encode_block_body(block_body, :none), do: block_body
-  defp encode_block_body(block_body, :lz4), do: ChNative.Block.encode(block_body, :lz4)
+
+  defp encode_block_body(block_body, :lz4),
+    do: ChDriver.Protocol.Block.Compressed.encode(block_body, :lz4)
 
   defp empty_block_info do
     is_overflows_field = 1

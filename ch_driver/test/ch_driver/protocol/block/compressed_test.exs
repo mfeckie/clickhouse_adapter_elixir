@@ -1,7 +1,7 @@
-defmodule ChNative.BlockTest do
+defmodule ChDriver.Protocol.Block.CompressedTest do
   use ExUnit.Case, async: true
 
-  alias ChNative.Block
+  alias ChDriver.Protocol.Block.Compressed, as: Block
 
   describe "round-trip" do
     test "via lz4" do
@@ -296,7 +296,7 @@ defmodule ChNative.BlockTest do
     test "decode returns an error for an unrecognized method byte" do
       payload = "some payload"
       header = <<0xFF::8, 9 + byte_size(payload)::little-32, byte_size(payload)::little-32>>
-      checksum = ChCodec.cityhash128([header, payload])
+      checksum = ChDriver.Codec.cityhash128([header, payload])
       binary = checksum <> header <> payload
 
       assert {:error, {:unsupported_method, 0xFF}} = Block.decode(binary)
@@ -306,7 +306,7 @@ defmodule ChNative.BlockTest do
       # Hand-craft a header claiming compressed_size == 3 (< the 9-byte
       # header size), which should be rejected before any checksum work.
       header = <<0x02::8, 3::little-32, 0::little-32>>
-      checksum = ChCodec.cityhash128([header])
+      checksum = ChDriver.Codec.cityhash128([header])
       binary = checksum <> header
 
       assert {:error, {:invalid_compressed_size, 3}} = Block.decode(binary)

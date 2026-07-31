@@ -49,17 +49,80 @@ anything that accepts a `DBConnection` reference works as `conn`.
 parameter-binding story (`Ecto.Adapters.ClickHouse.Connection`'s `?`-based
 binding is built on top of this).
 
-## Compression: ch_native and ch_codec
+## Compression: the compressed block envelope and its LZ4/CityHash NIF
 
-[`ch_native`](../ch_native) (`ChNative.Block`) and [`ch_codec`](../ch_codec)
-(the Rust NIF backing it) implement ClickHouse's compressed native-block wire
-envelope, and this driver wires it up via the `:compression` option
-(`:none`, the default, or `:lz4`) accepted by `start_link/1` and overridable
-per call via `query/4`'s/`stream/4`'s `opts`. Enabling it negotiates LZ4
-compression for both directions of a query's block traffic -- see
-`ChDriver.Connection.connect/1` and
+`ChDriver.Protocol.Block.Compressed` (the pure-Elixir compressed-block wire
+envelope) and `ChDriver.Codec` (the Rust NIF backing it) together implement
+ClickHouse's compressed native-block wire envelope, and this driver wires it
+up via the `:compression` option (`:none`, the default, or `:lz4`) accepted
+by `start_link/1` and overridable per call via `query/4`'s/`stream/4`'s
+`opts`. Enabling it negotiates LZ4 compression for both directions of a
+query's block traffic -- see `ChDriver.Connection.connect/1` and
 `ChDriver.Protocol.Messages.encode_query/2` for exactly how that negotiation
 works and what it means for callers.
+
+### Why a custom LZ4/CityHash codec
+
+ClickHouse wraps every block it sends or receives in a fixed envelope:
+
+```
+[16 bytes] CityHash128 checksum (covers everything below)
+[1 byte]   compression method marker (0x02 = NONE, 0x82 = LZ4, 0x90 = ZSTD)
+[4 bytes]  compressed size, little-endian
+[4 bytes]  uncompressed size, little-endian
+[...]      payload
+```
+
+`ChDriver.Protocol.Block.Compressed.encode/2` builds one of these envelopes
+(`:lz4` or `:none`); `decode/1` parses one off the front of a binary,
+returning the decompressed payload plus any unconsumed trailing bytes so
+callers can loop over back-to-back blocks. Multiple blocks are simply
+concatenated back-to-back with no additional framing.
+
+Two things about this envelope make it awkward to build from off-the-shelf
+packages, which is why `ChDriver.Codec` exists as a small Rust NIF rather
+than reaching for a generic Hex dependency:
+
+First, the LZ4 here isn't the LZ4 Frame format you get from the `lz4`
+command line tool. It's the raw LZ4 block format, with no header of its
+own. ClickHouse supplies its own header instead (the four fields above).
+
+Second, the checksum isn't today's CityHash. ClickHouse froze on CityHash
+v1.0.2 years ago -- a different, older algorithm than the v1.0.3 that most
+modern "cityhash" packages implement, not just a different byte-packing of
+the same hash. The two only agree for short inputs and diverge once the
+input exceeds roughly 64 bytes, so a generic "cityhash" library on your
+package manager of choice will silently give you the wrong answer for any
+real payload. You need the exact old version.
+
+`ChDriver.Codec` handles both, and packs the checksum into the exact byte
+order ClickHouse expects on the wire:
+
+```elixir
+compressed = ChDriver.Codec.lz4_compress(data)
+
+# uncompressed_size has to come from somewhere -- ClickHouse's block
+# header carries it, since the raw LZ4 format has no length prefix
+{:ok, data} = ChDriver.Codec.lz4_decompress(compressed, uncompressed_size)
+
+checksum = ChDriver.Codec.cityhash128(data)
+# <<...16 bytes...>>
+```
+
+`cityhash128/1` is checked against Google's own published CityHash v1.0.2
+test vectors, so you're not just trusting our word for it.
+
+### Precompiled builds
+
+`ChDriver.Codec` is a Rust NIF, and most people don't want to install a Rust
+toolchain just to use a ClickHouse client. Releases are built for the common
+targets (macOS and Linux, both gnu and musl, arm64 and x86_64) via
+`rustler_precompiled`, so a normal `mix deps.get` should just download a
+prebuilt binary rather than compiling anything.
+
+If you're building from source, or on a target we don't precompile for,
+it'll fall back to compiling the crate locally. That needs `cargo` and a
+stable Rust toolchain on your machine.
 
 ## Installation
 
@@ -71,4 +134,12 @@ def deps do
     {:ch_driver, path: "path/to/clickhouse_adapter_elixir/ch_driver"}
   ]
 end
+```
+
+## Developing on the Rust NIF
+
+```
+mix deps.get
+mix test
+cd native/ch_driver_native && cargo test
 ```

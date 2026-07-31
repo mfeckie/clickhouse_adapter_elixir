@@ -1,4 +1,4 @@
-defmodule ChNative.Block do
+defmodule ChDriver.Protocol.Block.Compressed do
   @moduledoc """
   Encodes and decodes ClickHouse native-protocol compressed block envelopes.
 
@@ -14,6 +14,12 @@ defmodule ChNative.Block do
   Multiple blocks are simply concatenated back-to-back with no additional
   framing -- callers should call `decode/1` repeatedly, threading the
   returned `rest` through, until the buffer is exhausted.
+
+  Built on `ChDriver.Codec`'s Rust-NIF-backed LZ4/CityHash primitives --
+  `lz4_compress/1`/`lz4_decompress/2` for the raw (headerless) LZ4 block
+  format ClickHouse uses, and `cityhash128/1` for the checksum, computed
+  with the exact CityHash v1.0.2 constants ClickHouse itself uses (not
+  today's CityHash).
 
   ## Wired into ChDriver as opt-in compression
 
@@ -49,7 +55,7 @@ defmodule ChNative.Block do
   def encode(iodata, :lz4) do
     payload = IO.iodata_to_binary(iodata)
     uncompressed_size = byte_size(payload)
-    compressed_payload = ChCodec.lz4_compress(payload)
+    compressed_payload = ChDriver.Codec.lz4_compress(payload)
     build(@method_lz4, compressed_payload, uncompressed_size)
   end
 
@@ -67,7 +73,7 @@ defmodule ChNative.Block do
       uncompressed_size::little-32
     >>
 
-    checksum = ChCodec.cityhash128([header, stored_payload])
+    checksum = ChDriver.Codec.cityhash128([header, stored_payload])
 
     [checksum, header, stored_payload]
     |> IO.iodata_to_binary()
@@ -120,7 +126,7 @@ defmodule ChNative.Block do
           uncompressed_size::little-32
         >>
 
-        expected_checksum = ChCodec.cityhash128([header, payload])
+        expected_checksum = ChDriver.Codec.cityhash128([header, payload])
 
         if checksum == expected_checksum do
           decode_payload(method_byte, payload, uncompressed_size, rest)
@@ -140,7 +146,7 @@ defmodule ChNative.Block do
   end
 
   defp decode_payload(@method_lz4, payload, uncompressed_size, rest) do
-    case ChCodec.lz4_decompress(payload, uncompressed_size) do
+    case ChDriver.Codec.lz4_decompress(payload, uncompressed_size) do
       {:ok, decompressed} -> {:ok, decompressed, rest}
       {:error, reason} -> {:error, reason}
     end
