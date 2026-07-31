@@ -47,13 +47,6 @@ defmodule ClickhouseAdapterEcto.MixProject do
     [
       {:ecto, "~> 3.0"},
       {:ecto_sql, "~> 3.0"},
-      # TEMPORARY: needed only so CI's RUSTLER_PRECOMPILED_FORCE_BUILD_ALL
-      # workaround (see .github/workflows/clickhouse_adapter_ecto_ci.yml) can
-      # force-build ch_driver's NIF locally instead of downloading a
-      # precompiled binary that doesn't exist yet (no ch_driver-v* release
-      # has been published -- see RELEASING.md). Remove once the first real
-      # ch_driver-v* release exists.
-      {:rustler, ">= 0.0.0", optional: true},
       ch_driver_dep()
     ]
   end

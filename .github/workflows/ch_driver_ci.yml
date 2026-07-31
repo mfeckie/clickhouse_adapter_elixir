@@ -64,19 +64,8 @@ jobs:
 
       - run: mix deps.get
       - run: mix format --check-formatted
-
-      # TEMPORARY: no ch_driver-v* GitHub release with precompiled NIF
-      # binaries exists yet (this project was just renamed/consolidated from
-      # ch_codec+ch_native -- see RELEASING.md), so RustlerPrecompiled's
-      # normal download would 404. Force a local Rust build instead, same as
-      # this workflow's own Rust toolchain setup above already supports.
-      # Remove this once the first real ch_driver-v* tag has been released.
       - run: mix compile --warnings-as-errors
-        env:
-          RUSTLER_PRECOMPILED_FORCE_BUILD_ALL: "1"
       - run: mix test
-        env:
-          RUSTLER_PRECOMPILED_FORCE_BUILD_ALL: "1"
 
       - name: cargo test
         working-directory: ch_driver/native/ch_driver_native

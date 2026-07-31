@@ -100,18 +100,5 @@ jobs:
 
       - run: mix deps.get
       - run: mix format --check-formatted
-
-      # TEMPORARY: no ch_driver-v* GitHub release with precompiled NIF
-      # binaries exists yet (ch_driver was just renamed/consolidated from
-      # ch_codec+ch_native -- see RELEASING.md), so RustlerPrecompiled's
-      # normal download would 404 even transitively through this project's
-      # dependency on ch_driver. Force a local Rust build instead (the Rust
-      # toolchain is already set up above). Remove this, and the temporary
-      # `{:rustler, ...}` entry in clickhouse_adapter_ecto/mix.exs's deps,
-      # once the first real ch_driver-v* tag has been released.
       - run: mix compile --warnings-as-errors
-        env:
-          RUSTLER_PRECOMPILED_FORCE_BUILD_ALL: "1"
       - run: mix test
-        env:
-          RUSTLER_PRECOMPILED_FORCE_BUILD_ALL: "1"
