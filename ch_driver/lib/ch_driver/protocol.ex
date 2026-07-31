@@ -1,16 +1,16 @@
 defmodule ChDriver.Protocol do
   @moduledoc """
-  ClickHouse native-protocol packet types relevant to the initial
-  connection handshake.
+  Encodes and decodes ClickHouse native-protocol packets.
 
-  The Hello exchange (ClientHello sent, ServerHello received) happens in
-  plaintext -- unlike Query/Data packets, it is never wrapped in a
-  `ChDriver.Protocol.Block.Compressed` compressed envelope.
+  This is internal to the driver — application code talks to ClickHouse
+  through `ChDriver`, not this module directly.
 
-  This module owns packet-type dispatch (`decode_packet/1`), the
-  ClientHello/ServerHello struct definitions, and revision-gating
-  predicates. Per-message byte layouts -- the actual encoding/decoding of
-  each packet body -- live in `ChDriver.Protocol.Messages`.
+  Covers the connection handshake (`client_hello/3`, `encode_client_hello/1`,
+  `decode_server_hello/1`), building outgoing Query/Ping/Cancel packets, and
+  dispatching incoming server packets to the right decoder
+  (`decode_packet/2`). Per-message byte layouts live in
+  `ChDriver.Protocol.Messages`; this module owns packet-type dispatch and
+  the ClientHello/ServerHello struct definitions.
   """
 
   alias ChDriver.Protocol.Messages
@@ -121,35 +121,30 @@ defmodule ChDriver.Protocol do
   end
 
   @doc """
-  Whether this driver's advertised revision requires sending the
-  post-ServerHello Addendum (see `ChDriver.Protocol.Messages.encode_addendum/0`).
+  Whether the handshake needs to send an Addendum packet after ServerHello.
+  Always `true` for this driver's advertised protocol revision.
   """
   @spec addendum_required? :: boolean
   def addendum_required?, do: Messages.client_revision() >= @min_revision_with_addendum
 
   @doc """
-  Encodes the Addendum sent immediately after receiving ServerHello, when
-  `addendum_required?/0` is true. See
-  `ChDriver.Protocol.Messages.encode_addendum/0` for the wire layout and
-  why this step is required.
+  Encodes the Addendum packet sent right after receiving ServerHello, when
+  `addendum_required?/0` is true.
   """
   @spec encode_addendum() :: iodata
   def encode_addendum, do: Messages.encode_addendum()
 
   @doc """
-  Encodes a Query packet (Client packet type 1) for `query_string`.
+  Encodes a Query packet for `query_string`.
 
   `opts` accepts:
 
     * `:query_id` -- defaults to `""`.
-    * `:params` -- a list of `{name :: binary, raw_text :: binary}` pairs
-      binding `query_string`'s `{name:Type}` placeholders (see
-      `ChDriver.Params.text/1` for turning an Elixir value into
-      `raw_text` and `ChDriver.Params.escape_rounds/1` for the matching
-      escape depth -- a bare 2-tuple defaults to the scalar depth of 2).
-      Defaults to `[]`.
-
-  See `ChDriver.Protocol.Messages.encode_query/2` for the full wire layout.
+    * `:params` -- a list of `{name, raw_text}` or `{name, raw_text, rounds}`
+      tuples binding `query_string`'s `{name:Type}` placeholders. Build
+      these from Elixir values with `ChDriver.Params.text/1` and
+      `ChDriver.Params.escape_rounds/1`. Defaults to `[]`.
+    * `:compression` -- `:none` (default) or `:lz4`.
   """
   @spec encode_query(binary, keyword) :: iodata
   def encode_query(query_string, opts \\ []) do
@@ -157,12 +152,9 @@ defmodule ChDriver.Protocol do
   end
 
   @doc """
-  Encodes an empty Data packet (Client packet type 2): an empty external
-  table, sent right after a Query packet to signal "no external tables /
-  no input data" (required even for plain SELECTs). `compression` must
-  match whatever was passed as `encode_query/2`'s `:compression` opt for
-  this query. See `ChDriver.Protocol.Messages.encode_empty_data_packet/1`
-  for the wire layout.
+  Encodes the empty Data packet ClickHouse requires right after every
+  Query packet, even for a plain `SELECT`. `compression` must match
+  whatever was passed as `encode_query/2`'s `:compression` for this query.
   """
   @spec encode_empty_data_packet(ChDriver.Protocol.Block.Compressed.method()) :: iodata
   def encode_empty_data_packet(compression \\ :none) do
@@ -170,17 +162,16 @@ defmodule ChDriver.Protocol do
   end
 
   @doc """
-  Encodes a Ping packet (Client packet type 4). No body -- just the
-  packet-type varint. The server replies with a bare Pong (Server packet
-  type 4, see `@server_pong` / `decode_packet/1`) and nothing else.
+  Encodes a Ping packet. The server replies with a bare Pong and nothing
+  else.
   """
   @spec encode_ping() :: iodata
   def encode_ping, do: Messages.encode_ping()
 
   @doc """
-  Encodes a Cancel packet (Client packet type 3). See
-  `ChDriver.Protocol.Messages.encode_cancel/0` for the wire layout and
-  why the caller must keep draining the socket after sending this.
+  Encodes a Cancel packet, telling the server to stop running the query
+  currently in progress on this connection. The caller must keep reading
+  until `:end_of_stream` afterward — see `ChDriver.Connection.cancel_stream/2`.
   """
   @spec encode_cancel() :: iodata
   def encode_cancel, do: Messages.encode_cancel()
@@ -189,40 +180,23 @@ defmodule ChDriver.Protocol do
   Decodes a single server response packet from the front of `binary`.
 
   Returns `{:ok, packet, rest}`, `{:incomplete, binary}` if more bytes are
-  needed (retry with more buffered data), or `{:error, reason}`.
+  needed (buffer more and retry), or `{:error, reason}`.
 
   `packet` is one of:
 
-    * `{:data, %{table_name:, columns:, rows:}}` -- a Data packet (Server
-      packet type 1) or a wire-identical ProfileEvents packet (type 14,
-      tagged `:profile_events` instead of `:data`).
-    * `{:profile_events, %{table_name:, columns:, rows:}}`
+    * `{:data, %{table_name:, columns:, rows:}}` -- a query result block.
+    * `{:profile_events, %{table_name:, columns:, rows:}}` -- internal
+      query execution metrics, wire-identical to `:data`.
     * `{:progress, %{read_rows:, read_bytes:, total_rows_to_read:,
       total_bytes_to_read:, written_rows:, written_bytes:, elapsed_ns:}}`
     * `:pong`
     * `:end_of_stream`
     * `{:exception, %ChDriver.Error{}}`
 
-  Packet type discriminants are documented in the module-level comments
-  above; per-type field layouts live in `ChDriver.Protocol.Messages`.
-
   `compression` (`:none` (default) or `:lz4`) must match whatever was
-  negotiated for this query via `encode_query/2`'s `:compression` opt --
-  it only affects how Data packets' block bodies are decoded (routed
-  through `ChDriver.Protocol.Block.Compressed.decode/1` first when `:lz4`).
-
-  ProfileEvents (type 14) is deliberately excluded from that: verified
-  live against ClickHouse 24.8 with compression negotiated on, the server
-  sends ProfileEvents blocks in plain, un-enveloped Native format
-  regardless of the negotiated compression setting -- unlike Data, it's
-  written via its own dedicated `NativeWriter` straight to the raw output
-  stream rather than through the query's `maybe_compressed_out`. Forcing
-  `:lz4` decoding onto it (as this driver's first cut at compression did)
-  desyncs the stream right after the first ProfileEvents packet, since
-  ChDriver.Protocol.Block.Compressed.decode/1 then waits forever for a compression envelope
-  header that was never written. So ProfileEvents is always decoded as
-  `:none`, independent of `compression`; every other packet type (Progress,
-  ProfileInfo, Exception, EndOfStream, Pong) was already plain regardless.
+  negotiated for this query via `encode_query/2`'s `:compression` opt.
+  It only affects how Data packets' block bodies are decoded; ProfileEvents
+  and every other packet type are always plain regardless of compression.
   """
   @spec decode_packet(binary, ChDriver.Protocol.Block.Compressed.method()) ::
           {:ok, term, binary} | {:incomplete, binary} | {:error, term}

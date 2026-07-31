@@ -1,36 +1,16 @@
 defmodule ChDriver.Types do
   @moduledoc """
-  Parses ClickHouse's column *type strings* (e.g. `"Nullable(String)"`,
-  `"Map(String, Decimal(10, 2))"`) into their component parts. Pure string
-  parsing only -- no wire decoding happens here; see
-  `ChDriver.Types.Registry` for the scalar codec table and
-  `ChDriver.Protocol.Block.Wrappers` / `ChDriver.Protocol.Block.Sparse` for
-  how these parsed types drive decoding of wrapper/compound column data.
+  Parses ClickHouse column type strings, e.g. `"Nullable(String)"` or
+  `"Map(String, Decimal(10, 2))"`, into their component parts.
 
-  Every wrapper/compound type ClickHouse's Native block format can send
-  that this driver understands is recognized here:
+  Pure string parsing — no wire decoding happens here. See
+  `ChDriver.Protocol.Block.Wrappers` for how the parsed types drive actual
+  column decoding.
 
-    * `Nullable(T)` -- decoded in `ChDriver.Protocol.Block.Wrappers`, whose
-      moduledoc documents the null-map wire format.
-    * `Array(T)` -- decoded in `ChDriver.Protocol.Block.Wrappers`, whose
-      moduledoc documents the offsets wire format.
-    * `Map(K, V)` -- decoded in `ChDriver.Protocol.Block.Wrappers`. Parsing
-      it here requires finding the *top-level* comma only (tracking paren
-      depth via `split_top_level_comma/1`), so e.g.
-      `Map(String, Decimal(10, 2))` isn't split on the inner comma.
-    * `LowCardinality(T)` -- decoded in `ChDriver.Protocol.Block.Wrappers`.
-    * `Decimal(P, S)` and its fixed-precision aliases `Decimal32(S)` /
-      `Decimal64(S)` / `Decimal128(S)` / `Decimal256(S)` -- decoded in
-      `ChDriver.Protocol.Block.Wrappers`.
-    * `FixedString(N)` -- decoded via the generic
-      `ChDriver.Types.Registry.decode_fixed_width/4` with an identity
-      unpack function (see the call site in
-      `ChDriver.Protocol.NativeBlock`'s `decode_column_data/3`).
-
-  `Tuple(...)` is not supported in its own right -- only as `Map(K, V)`'s
-  implicit internal representation, not as a directly-selectable column
-  type (see `ChDriver.Protocol.Block.Wrappers`'s `decode_map/4` moduledoc for
-  why generalizing it is more work than it looks).
+  Supports `Nullable(T)`, `Array(T)`, `Map(K, V)`, `LowCardinality(T)`,
+  `Decimal(P, S)` (and its `Decimal32/64/128/256(S)` aliases), and
+  `FixedString(N)`. `Tuple(...)` isn't supported as a standalone column
+  type — only as `Map`'s internal representation.
   """
 
   @doc """

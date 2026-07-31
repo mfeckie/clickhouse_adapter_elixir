@@ -1,42 +1,17 @@
 defmodule ChDriver.Query do
   @moduledoc """
-  A query for `ChDriver.DBConnection` -- a raw SQL string, optionally
-  containing `?` positional placeholders (rewritten by `parse/2` into
-  ClickHouse native `{name:Type}` parameter placeholders at execute time)
-  or literal `{name:Type}` placeholders written directly by the caller.
+  A query for `ChDriver.DBConnection`: a raw SQL string, plus enough parsed
+  state to bind parameters to it.
 
-  `params` passed to `DBConnection.execute/3,4` is the list of raw Elixir
-  values to bind, in the same order the `?`s appear in `statement`.
-  `DBConnection.Query.parse/2` (see the `defimpl` below) lexes `statement`
-  for `?` placeholders exactly once -- the result is cached by
-  `DBConnection`/`Ecto.Adapters.SQL`'s own query cache across repeated
-  executions of the same prepared query, so this quote-aware scan happens
-  once per distinct query shape rather than on every execute.
+  `statement` can use plain `?` positional placeholders, or ClickHouse's own
+  `{name:Type}` named placeholders written directly. Application code
+  doesn't build this struct directly — pass a SQL string to
+  `ChDriver.query/2,3,4` and it gets wrapped for you.
 
-  ## Why `param_types` can't be baked in at parse time
-
-  ClickHouse's native protocol has no untyped placeholder syntax -- every
-  bound parameter must be written as `{name:Type}` with a concrete type,
-  and a `nil` value can't be bound as a typed parameter at all (see
-  `ChDriver.Params`'s moduledoc): it has to be inlined as the literal
-  `NULL` token instead. Both the concrete type and the nil-ness of a value
-  are properties of *this call's actual arguments*, which `parse/2` never
-  sees (`DBConnection.Query.parse/2` runs before any params exist -- see
-  `DBConnection.prepare_execute/4`'s implementation). Two executions of
-  the very same cached/prepared query can legitimately bind different
-  shapes at the same position -- e.g. `Repo.insert!/1` on a schema with a
-  nullable column, called once with a value and once with `nil` for that
-  column, reuses the identical cached insert statement both times.
-
-  So `parse/2` only resolves *where* the placeholders are (the expensive,
-  quote-aware part) and stores that as `segments`; `encode/3` resolves
-  *what* to bind each execution's actual values as (via
-  `ChDriver.Params.encode/1`, cheap and per-value); and
-  `ChDriver.DBConnection`'s `handle_execute/4` splices the two together into
-  the final wire statement + wire params for this specific call. This
-  keeps the expensive one-time lexing cached while still allowing a
-  per-execution decision between a typed placeholder and an inlined
-  `NULL` literal at any given position.
+  Placeholder positions are lexed once (quote-aware, so a `?` inside a
+  string literal is never mistaken for a bind position) and cached across
+  repeated executions of the same prepared query, matching the shape of
+  `Postgrex.Query`.
   """
 
   defstruct [:statement, :query_id, :param_names, :param_types, :segments]
@@ -138,18 +113,12 @@ defimpl DBConnection.Query, for: ChDriver.Query do
   alias ChDriver.Query
 
   @moduledoc """
-  See `ChDriver.Query`'s moduledoc for the full rationale, in particular
-  for why type resolution is deliberately *not* done in `parse/2`.
+  `DBConnection.Query` implementation for `ChDriver.Query`.
   """
 
   @doc """
-  Lexes `query.statement` for `?` placeholders exactly once and caches the
-  result (`segments`, `param_names`, `param_types`) on the returned
-  struct. Raises if called again on an already-parsed query -- mirrors
-  `Postgrex.Query`'s `parse/2` (see `postgrex/lib/postgrex/query.ex`),
-  which exists to catch a caller accidentally re-preparing a query struct
-  that DBConnection's own cache should have prevented from reaching
-  `parse/2` a second time.
+  Lexes `query.statement` for `?` placeholders and caches the result on the
+  returned struct. Raises if called on a query that's already been parsed.
   """
   def parse(%Query{param_names: nil} = query, _opts) do
     segments = Query.lex_placeholders(query.statement)
@@ -175,29 +144,17 @@ defimpl DBConnection.Query, for: ChDriver.Query do
   end
 
   @doc """
-  Identity. ClickHouse's native protocol has no server-side Describe --
-  there is no request/response pair to send after Prepare the way
-  postgres's Parse/Describe/Bind flow has one. `handle_prepare/2` in
-  `ChDriver.DBConnection` is (and will remain) `{:ok, query, state}` for
-  the same reason: there is nothing for either callback to do here. This
-  is intentionally a no-op, not a gap -- do not "fix" it by adding a
-  network round-trip.
+  Returns `query` unchanged. ClickHouse's native protocol has no
+  server-side Describe step, so there's nothing to do here.
   """
   def describe(query, _opts), do: query
 
   @doc """
   Encodes `params` (the raw Elixir values for this call) against
-  `query.param_names`, raising `ArgumentError` on an arity mismatch or on
-  an unparsed query -- mirrors `Postgrex.Query.encode/3`
-  (`postgrex/lib/postgrex/query.ex:66-79`).
+  `query.param_names`.
 
-  Each element of the returned list is either `{name, :null}` (the value
-  was `nil`; `to_wire/2` (this module, below) inlines this as a literal
-  `NULL` rather than a typed placeholder -- see `ChDriver.Params`'s
-  moduledoc for why nil can't be bound as a typed parameter) or
-  `{name, type, raw_text, escape_rounds}` from `ChDriver.Params.encode/1`.
-  `ChDriver.DBConnection`'s `handle_execute/4` is what turns this into the
-  final wire statement/params via `to_wire/2` (this module, below).
+  Raises `ArgumentError` on an arity mismatch or if `query` hasn't been
+  parsed yet.
   """
   def encode(%Query{param_names: nil} = query, _params, _opts) do
     raise ArgumentError, "query #{inspect(query)} has not been prepared"

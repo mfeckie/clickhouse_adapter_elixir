@@ -1,39 +1,16 @@
 defmodule ChDriver.Protocol.Block.Compressed do
   @moduledoc """
-  Encodes and decodes ClickHouse native-protocol compressed block envelopes.
+  Encodes and decodes ClickHouse's compressed block envelope: a checksum
+  and a method marker wrapped around a block's bytes, LZ4-compressed or
+  plain.
 
-  Wire format (see ClickHouse's `CompressionInfo.h` / `CompressedReadBufferBase.cpp`):
+  Multiple blocks are concatenated back-to-back with no extra framing —
+  call `decode/1` repeatedly, threading the returned `rest` through, until
+  the buffer is exhausted.
 
-      [16 bytes] CityHash128 checksum, over everything below
-      [1 byte]   compression method marker (0x02 = NONE, 0x82 = LZ4, 0x90 = ZSTD)
-      [4 bytes]  compressed_size, little-endian -- covers the 9-byte
-                 method+sizes header itself, plus the (possibly compressed) payload
-      [4 bytes]  uncompressed_size, little-endian
-      [...]      payload (compressed unless method is NONE)
-
-  Multiple blocks are simply concatenated back-to-back with no additional
-  framing -- callers should call `decode/1` repeatedly, threading the
-  returned `rest` through, until the buffer is exhausted.
-
-  Built on `ChDriver.Codec`'s Rust-NIF-backed LZ4/CityHash primitives --
-  `lz4_compress/1`/`lz4_decompress/2` for the raw (headerless) LZ4 block
-  format ClickHouse uses, and `cityhash128/1` for the checksum, computed
-  with the exact CityHash v1.0.2 constants ClickHouse itself uses (not
-  today's CityHash).
-
-  ## Wired into ChDriver as opt-in compression
-
-  Both `encode/2` and `decode/1` are called from `ch_driver`, gated behind
-  its `:compression` option (`:none` by default, `:lz4` to opt in):
-  `ChDriver.Protocol.Messages.encode_query/2` negotiates compression with the
-  server via the Query packet's compression flag, `encode_empty_data_packet/1`
-  routes the outbound external-table block through `encode/2` when enabled,
-  and `ChDriver.Protocol.decode_packet/2` ->
-  `ChDriver.Protocol.NativeBlock.decode_data_packet/2` routes inbound
-  Data/ProfileEvents blocks through `decode/1` the same way. See
-  `ChDriver.Connection`'s `:compression` option docs for the client-facing
-  API and `ChDriver.Protocol.Messages.encode_query/2`'s moduledoc for the
-  wire-level negotiation details.
+  This is what backs the `:compression` option on `ChDriver.start_link/1`
+  and `ChDriver.query/4` — you won't normally call `encode/2`/`decode/1`
+  directly. Built on `ChDriver.Codec`'s LZ4/CityHash primitives.
   """
 
   @checksum_size 16

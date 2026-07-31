@@ -1,12 +1,11 @@
 defmodule ChDriver.Protocol.Messages do
   @moduledoc """
-  Per-message byte layouts for the ClickHouse native protocol.
+  Byte-level encoding and decoding for each ClickHouse native-protocol
+  message: Hello, Addendum, Query (with its ClientInfo sub-structure), the
+  empty Data packet, Ping, Exception, Progress, and ProfileInfo.
 
-  `ChDriver.Protocol` owns packet-type dispatch (mapping a leading varint to
-  the right decoder) and revision-gating predicates; this module owns the
-  actual encoding/decoding of every message body -- Hello, Addendum, Query
-  (+ ClientInfo), the empty Data packet, Ping, Exception, Progress, and
-  ProfileInfo.
+  This is internal to the driver. `ChDriver.Protocol` owns packet-type
+  dispatch and calls into this module for the actual bytes.
   """
 
   alias ChDriver.Protocol.{ClientHello, ServerHello}
@@ -151,21 +150,11 @@ defmodule ChDriver.Protocol.Messages do
 
   @doc """
   Encodes the Addendum sent immediately after receiving ServerHello, when
-  `ChDriver.Protocol.addendum_required?/0` is true. This is *not* a full
-  packet -- just a raw length-prefixed string (the quota key; we always
-  send empty), with no leading packet-type varint. See
-  `TCPHandler::receiveAddendum` in ClickHouse's Server/TCPHandler.cpp.
+  `ChDriver.Protocol.addendum_required?/0` is true.
 
-  CRITICAL: ClickHouse requires this immediately after ServerHello, before
-  any Query packet, whenever the client's advertised revision is >=
-  DBMS_MIN_PROTOCOL_VERSION_WITH_ADDENDUM (54458, see
-  `ChDriver.Protocol.addendum_required?/0`) -- which this driver's fixed
-  revision always is. Omitting this step silently desyncs every byte sent
-  afterwards: the server blocks reading it right after ServerHello, so the
-  *next* bytes we send -- e.g. the start of a Query packet -- get consumed
-  as this string instead, which surfaces as a bizarre unrelated "Empty
-  query" (or worse) error from the server despite an otherwise-correct
-  Query packet.
+  Not a full packet — just a raw length-prefixed string (the quota key,
+  always sent empty here), with no leading packet-type varint. This must
+  be sent before any Query packet; see `ChDriver.Protocol.addendum_required?/0`.
   """
   @spec encode_addendum() :: iodata
   def encode_addendum, do: Varint.encode_string("")
@@ -186,50 +175,20 @@ defmodule ChDriver.Protocol.Messages do
   @custom_setting_flag 2
 
   @doc """
-  Encodes a Query packet (Client packet type 1) for `query_string`.
-
-  Field order (see `Connection::sendQuery` / `TCPHandler::receiveQuery` in
-  ClickHouse's own source, protocol revision 54469):
-
-      packet type (varint, 1)
-      query_id (string, empty lets the server generate one)
-      ClientInfo (see `encode_client_info/0`)
-      per-query settings (string "" -- empty settings list terminator)
-      interserver secret (string "" -- gated on
-        DBMS_MIN_REVISION_WITH_INTERSERVER_SECRET, always satisfied here)
-      query processing stage (varint, 2 = Complete)
-      compression (varint, 0 = disabled, 1 = enabled -- see below)
-      query string
-      query parameters (see `encode_query_parameters/1` -- gated on
-        DBMS_MIN_PROTOCOL_VERSION_WITH_PARAMETERS, always satisfied here)
+  Encodes a Query packet for `query_string`.
 
   `opts` accepts:
 
-    * `:query_id` -- defaults to `""`.
-    * `:params` -- a list of `{name :: binary, raw_text :: binary}` pairs
-      binding `query_string`'s `{name:Type}` placeholders (see
-      `ChDriver.Params.text/1` for turning an Elixir value into
-      `raw_text` and `ChDriver.Params.escape_rounds/1` for the matching
-      escape depth -- a bare 2-tuple defaults to the scalar depth of 2).
-      Defaults to `[]`.
-    * `:compression` -- `:none` (default) or `:lz4`. This is *not* a codec
-      choice for this one field alone: per `TCPHandler::receiveQuery` /
-      `TCPHandler::run` in ClickHouse's own source (reverse-engineered
-      empirically against a live 24.8 server -- see
-      `ChDriver.Connection`'s moduledoc-adjacent comments for how), setting
-      this varint to 1 (Enable) tells the server that *both directions* of
-      this query's block traffic are compressed from here on: the server
-      wraps every Data/ProfileEvents block it sends back in a
-      `ChDriver.Protocol.Block.Compressed` compressed envelope, and it expects the client's own
-      Data packets (e.g. the empty external-table block sent by
-      `encode_empty_data_packet/1`) to arrive wrapped the same way --
-      sending a plain block after declaring compression enabled leaves the
-      server blocked forever trying to read a compression envelope header
-      out of un-enveloped bytes. The envelope's method byte is chosen by
-      whichever side is doing the sending independently (LZ4 for both
-      client->server and server->client in this driver); Hello/Addendum and
-      non-block packets (Progress, ProfileInfo, Exception, EndOfStream) are
-      never wrapped, compression enabled or not.
+    * `:query_id` -- defaults to `""` (the server generates one).
+    * `:params` -- a list of `{name, raw_text}` or `{name, raw_text, rounds}`
+      tuples binding `query_string`'s `{name:Type}` placeholders. Build
+      these from Elixir values with `ChDriver.Params.text/1` and
+      `ChDriver.Params.escape_rounds/1`. Defaults to `[]`.
+    * `:compression` -- `:none` (default) or `:lz4`. Setting this to `:lz4`
+      tells the server that both directions of this query's block traffic
+      (Data, ProfileEvents) will be wrapped in a
+      `ChDriver.Protocol.Block.Compressed` envelope from here on — every
+      packet sent after this one, in either direction, needs to match.
   """
   @spec encode_query(binary, keyword) :: iodata
   def encode_query(query_string, opts \\ []) do
@@ -320,18 +279,12 @@ defmodule ChDriver.Protocol.Messages do
   end
 
   @doc """
-  Encodes an empty Data packet (Client packet type 2): an empty external
-  table, sent right after a Query packet to signal "no external tables /
-  no input data" (required even for plain SELECTs).
+  Encodes the empty Data packet ClickHouse requires right after every
+  Query packet, signaling "no external tables, no input data" — required
+  even for a plain `SELECT`.
 
-  The external-table name string is always sent plain -- only the block
-  body (BlockInfo with is_overflows=0/bucket_num=-1, zero columns, zero
-  rows) is ever wrapped. `compression` (`:none` (default) or `:lz4`) must
-  match whatever was negotiated for this query via `encode_query/2`'s
-  `:compression` opt -- when `:lz4`, the block body is routed through
-  `ChDriver.Protocol.Block.Compressed.encode/2` before being sent, since the server (having
-  been told compression is enabled in the preceding Query packet) expects
-  this block wrapped in a compressed envelope, not sent plain.
+  `compression` (`:none` (default) or `:lz4`) must match whatever was
+  negotiated for this query via `encode_query/2`'s `:compression` opt.
   """
   @spec encode_empty_data_packet(ChDriver.Protocol.Block.Compressed.method()) :: iodata
   def encode_empty_data_packet(compression \\ :none) do
@@ -368,21 +321,16 @@ defmodule ChDriver.Protocol.Messages do
   end
 
   @doc """
-  Encodes a Ping packet (Client packet type 4). No body -- just the
-  packet-type varint. The server replies with a bare Pong (Server packet
-  type 4, see `ChDriver.Protocol.decode_packet/1`) and nothing else.
+  Encodes a Ping packet. The server replies with a bare Pong and nothing
+  else.
   """
   @spec encode_ping() :: iodata
   def encode_ping, do: Varint.encode(@client_ping)
 
   @doc """
-  Encodes a Cancel packet (Client packet type 3). No body -- just the
-  packet-type varint. Tells the server to stop processing the
-  currently-running query on this connection; the client must keep
-  reading (Data/Progress/ProfileEvents blocks already in flight before
-  the server notices the cancellation may still arrive) until it
-  observes `:end_of_stream` -- see `ChDriver.Connection.cancel_stream/2`,
-  the only caller, which does exactly that drain after sending this.
+  Encodes a Cancel packet, telling the server to stop running the query
+  currently in progress on this connection. The caller must keep reading
+  until `:end_of_stream` afterward — see `ChDriver.Connection.cancel_stream/2`.
   """
   @spec encode_cancel() :: iodata
   def encode_cancel, do: Varint.encode(@client_cancel)

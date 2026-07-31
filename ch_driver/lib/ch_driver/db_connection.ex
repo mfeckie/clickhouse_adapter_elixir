@@ -1,62 +1,35 @@
 defmodule ChDriver.DBConnection do
   @moduledoc """
-  `DBConnection` behaviour implementation wrapping `ChDriver.Connection`'s
-  synchronous request/response socket so it can be used as a normal pooled
-  connection.
+  `DBConnection` behaviour implementation for ClickHouse's native TCP
+  protocol.
 
-  ClickHouse's native TCP protocol is a plain, unpipelined request/response
-  protocol -- one query in flight per socket at a time -- so this module is
-  a thin adapter: `handle_execute/4` receives `query` (a `%ChDriver.Query{}`
-  already lexed once by `DBConnection.Query.parse/2`) and `encoded_params`
-  (this call's values, already run through `DBConnection.Query.encode/3`),
-  splices them together into the final wire statement + `{name, raw_text,
-  escape_rounds}` params via `ChDriver.Query`'s `to_wire/2`, calls
-  `ChDriver.Connection.query/2,3`, and translates its
-  `{:ok, %{columns:, rows:}}` / `{:error, term}` shape into DBConnection's
-  `{:ok, query, result, state}` / `{:error | :disconnect, exception, state}`
-  contract -- `result` here is the raw `{columns, rows}` map;
-  `DBConnection.Query.decode/3` (in `ch_driver/lib/ch_driver/query.ex`) is
-  what turns it into a `%ChDriver.Result{}`, so it can honor
-  `opts[:decode_mapper]`.
+  This is internal wiring: it's what makes `ChDriver.start_link/1` and
+  `ChDriver.query/2,3,4` work as a normal pooled connection, but you should
+  never call functions in this module directly. Use `ChDriver`'s public API
+  instead.
 
-  Socket-level failures (`:gen_tcp` errors such as `:closed`/`:timeout`)
-  are treated as `:disconnect` so the pool tears down and reconnects the
-  underlying socket; ClickHouse-level query errors (a decoded
-  `%ChDriver.Error{}` from an Exception packet) are returned as ordinary
-  `:error` results, since the connection itself is still perfectly usable
-  for the next query.
+  ClickHouse's native protocol is unpipelined request/response — one query
+  in flight per socket at a time — so this module is a thin adapter over
+  `ChDriver.Connection`: `handle_execute/4` builds the final wire statement
+  and params, runs the query, and translates the result into the shape
+  `DBConnection` expects.
 
-  There is no transaction support in the ClickHouse native protocol as
-  used here, so `handle_begin/2`, `handle_commit/2`, and
-  `handle_rollback/2` are unimplemented stubs that error out rather than
-  silently pretending to do something; `handle_status/2` always reports
-  `:idle` since there is no transaction state to track.
+  Socket-level failures disconnect the pooled connection so it gets torn
+  down and reconnected; a ClickHouse-level query error (a rejected query,
+  a syntax error, etc.) is returned as an ordinary error instead, since the
+  connection itself is still fine to reuse.
 
-  ## Cursors (`handle_declare/4`, `handle_fetch/4`, `handle_deallocate/4`)
+  There's no transaction support in ClickHouse's native protocol, so
+  `handle_begin/2`, `handle_commit/2`, and `handle_rollback/2` all return an
+  error rather than pretending to do something.
 
-  Unlike transactions, real incremental streaming *is* achievable here:
-  ClickHouse's native protocol already delivers a query's result as a
-  header block followed by N Data blocks followed by EndOfStream, and
-  `ChDriver.Connection.start_stream/3` / `stream_fetch/2` /
-  `cancel_stream/2` expose that per-block loop instead of always running
-  it to completion and accumulating everything into memory the way
-  `handle_execute/4` does. The "cursor" `handle_fetch/4` receives back
-  from DBConnection on every call is a fixed value chosen once by
-  `handle_declare/4` (a bare `reference/0`, never inspected) --
-  DBConnection does *not* thread an updated cursor between fetches (see
-  its `@callback handle_fetch/4` docs: it returns `new_state`, not a new
-  cursor), so the actual mutable stream position (the unconsumed buffer
-  tail, current known columns, whether `:end_of_stream` has been seen)
-  has to live in the connection `state` itself, under `state.stream` --
-  exactly the socket/buffer persistence this needs, since `state` is
-  threaded through every callback the normal way.
+  ## Cursors
 
-  `handle_declare/4` is only reachable with a connection already checked
-  out to the calling process for the whole declare/fetch*/deallocate
-  sequence (`DBConnection.stream/4`'s own `resource/5` helper requires an
-  already-checked-out `%DBConnection{}` -- see `ChDriver.stream/2,3,4`'s
-  moduledoc), so there's no risk of a pooled connection handing the
-  cursor's socket to a different physical connection mid-stream.
+  `handle_declare/4`, `handle_fetch/4`, and `handle_deallocate/4` back
+  `ChDriver.stream/2,3,4`: they read a query's result one block at a time
+  via `ChDriver.Connection.start_stream/3` / `stream_fetch/2` /
+  `cancel_stream/2`, instead of accumulating the whole thing into memory
+  the way `handle_execute/4` does.
   """
 
   @behaviour DBConnection

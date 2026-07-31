@@ -1,7 +1,6 @@
 defmodule ChDriver do
   @moduledoc """
-  Public API for the ClickHouse native-protocol driver: a `DBConnection`
-  pool wrapping `ChDriver.Connection`'s TCP handshake and query encoding.
+  Native ClickHouse TCP-protocol driver, exposed as a `DBConnection` pool.
 
   ## Usage
 
@@ -9,33 +8,29 @@ defmodule ChDriver do
       {:ok, %ChDriver.Result{columns: columns, rows: rows}} =
         ChDriver.query(pool, "SELECT number FROM system.numbers LIMIT 5")
 
-  This is the intended integration point for higher layers (e.g.
-  `Ecto.Adapters.ClickHouse`) -- `start_link/1`, `query/2,3,4`,
-  `query!/2,3,4`, and `stream/2,3,4` are the whole public surface;
-  everything else (`ChDriver.DBConnection`, `ChDriver.Connection`,
-  `ChDriver.Protocol`) is wiring underneath it.
+  `start_link/1`, `query/2,3,4`, `query!/2,3,4`, and `stream/2,3,4` are the
+  whole public surface. Everything else in this library is internal wiring
+  (used directly by `Ecto.Adapters.ClickHouse`, but not meant to be called
+  from application code).
 
-  All `ChDriver.Connection.connect/1` options (`:hostname`, `:port`,
-  `:database`, `:username`, `:password`, `:connect_timeout`,
-  `:recv_timeout`, `:compression`) are accepted by `start_link/1` and
-  forwarded to each pooled connection; standard `DBConnection.start_link/2`
-  pool options (`:pool_size`, `:name`, etc.) are also accepted.
+  `start_link/1` accepts all of `ChDriver.Connection.connect/1`'s options
+  (`:hostname`, `:port`, `:database`, `:username`, `:password`,
+  `:connect_timeout`, `:recv_timeout`, `:compression`) plus the usual
+  `DBConnection.start_link/2` pool options (`:pool_size`, `:name`, etc.),
+  and forwards the connection options to every pooled connection.
 
-  `:compression` (`:none` (default) or `:lz4`) is opt-in wire compression
-  for Data blocks -- off by default, so existing callers see unchanged
-  behavior. It can also be overridden per call via `query/4`'s `opts`. See
-  `ChDriver.Connection.connect/1` and
-  `ChDriver.Protocol.Messages.encode_query/2` for how it's negotiated with
-  the server.
+  `:compression` (`:none` by default, or `:lz4`) turns on wire compression
+  for query result blocks. Set it once at pool start, or override it per
+  call via `query/4`'s `opts`.
   """
 
   alias ChDriver.Query
 
   @doc """
-  Starts a `DBConnection` pool of ClickHouse native-protocol connections.
+  Starts a pool of ClickHouse connections.
 
-  Returns `{:ok, pid}` (the pool/pid to pass as `conn` to `query/2,3`) or
-  `{:error, reason}`.
+  Returns `{:ok, pid}` (the pool to pass as `conn` to `query/2,3,4` or
+  `stream/2,3,4`) or `{:error, reason}`.
   """
   @spec start_link(keyword) :: {:ok, pid} | {:error, term}
   def start_link(opts \\ []) do
@@ -43,15 +38,21 @@ defmodule ChDriver do
   end
 
   @doc """
-  Runs `statement` (a raw SQL string, optionally containing ClickHouse
-  `{name:Type}` parameter placeholders) against `conn` (a pool started by
-  `start_link/1`, or any `DBConnection`-compatible connection reference)
-  and returns `{:ok, %ChDriver.Result{}}` or `{:error, reason}`.
+  Runs `statement` against `conn` and returns its result.
 
-  `params` is a list of `{name, raw_text}` or `{name, raw_text, escape_rounds}`
-  tuples binding `statement`'s placeholders -- see
-  `ChDriver.Params.text/1`/`ChDriver.Params.escape_rounds/1` and
-  `ChDriver.Query`'s moduledoc.
+  `statement` is a raw SQL string. It can contain plain `?` positional
+  placeholders, or ClickHouse's own `{name:Type}` named placeholders written
+  directly.
+
+  `params` is the list of Elixir values to bind, in the same order as the
+  `?`s (or `{name:Type}`s) in `statement`:
+
+      ChDriver.query(pool, "SELECT * FROM events WHERE user_id = ?", [42])
+
+  `conn` is a pool started by `start_link/1`, or any `DBConnection`-compatible
+  connection reference.
+
+  Returns `{:ok, %ChDriver.Result{}}` or `{:error, reason}`.
   """
   @spec query(DBConnection.conn(), binary, list, keyword) ::
           {:ok, ChDriver.Result.t()} | {:error, Exception.t()}
@@ -81,17 +82,16 @@ defmodule ChDriver do
   end
 
   @doc """
-  Builds a `%ChDriver.Stream{}` that lazily executes `statement` and
-  yields its rows one wire-protocol Data block at a time (each element is
-  a `%ChDriver.Result{}` for that block, honoring `opts[:decode_mapper]`
-  exactly like `query/2,3,4`), instead of buffering the whole result in
-  memory the way `query/2,3,4` does.
+  Streams the rows of `statement` one wire-protocol block at a time, instead
+  of loading the whole result into memory the way `query/2,3,4` does.
 
-  `conn` must already be a checked-out `%DBConnection{}` -- exactly what
-  `DBConnection.stream/4` itself requires (its `resource/5` helper only
-  matches an already-checked-out struct) -- so `stream/2,3,4` has to be
-  called from inside `DBConnection.run/3` or `DBConnection.transaction/3`,
-  not directly against a pool pid:
+  Returns a `%ChDriver.Stream{}`, an `Enumerable` whose elements are
+  `%ChDriver.Result{}` structs (one per block), honoring
+  `opts[:decode_mapper]` the same way `query/2,3,4` does.
+
+  `conn` must already be a checked-out connection, so `stream/2,3,4` has to
+  be called from inside `DBConnection.run/3` or `DBConnection.transaction/3`,
+  not directly against a pool:
 
       {:ok, result} =
         DBConnection.run(pool, fn conn ->
@@ -100,11 +100,9 @@ defmodule ChDriver do
           |> Enum.take(5)
         end)
 
-  See `ChDriver.Stream`'s moduledoc and `ChDriver.DBConnection`'s cursor
-  section for how the underlying `handle_declare/4`/`handle_fetch/4`/
-  `handle_deallocate/4` cycle keeps this genuinely incremental (each
-  block is only read off the socket when the consumer asks for it) rather
-  than pre-buffering everything and merely presenting it lazily.
+  Each block is only read off the socket when the consumer asks for the next
+  one, so `Enum.take/2` on a large query genuinely avoids buffering rows you
+  never asked for.
   """
   @spec stream(DBConnection.conn(), binary, list, keyword) :: ChDriver.Stream.t()
   def stream(%DBConnection{} = conn, statement, params \\ [], opts \\ []) do

@@ -1,97 +1,17 @@
 defmodule ChDriver.Protocol.Block.Wrappers do
   @moduledoc """
-  Decoders for ClickHouse's wrapper/compound column types, dispatched from
-  `ChDriver.Protocol.NativeBlock`'s `decode_column_data/3`: `Nullable(T)`,
+  Decoders for ClickHouse's wrapper and compound column types: `Nullable(T)`,
   `Array(T)`, `Map(K, V)`, `LowCardinality(T)`, and `Decimal(P, S)`.
-  `Nullable`/`Array`/`Map`/`LowCardinality` each recurse back into
-  `ChDriver.Protocol.NativeBlock`'s `decode_column_data/3` for their inner
-  type(s) -- this mutual recursion across the module boundary is what
-  makes arbitrarily nested types like `Array(Nullable(String))` or
-  `Map(String, Array(UInt32))` work for free; see
-  `ChDriver.Protocol.NativeBlock`'s moduledoc for how new wrapper types
-  should be added alongside these.
 
-  `Nullable(T)`'s wire format (per ClickHouse's `ColumnNullable.cpp`,
-  matching clickhouse-driver Python's `columns/nullablecolumn.py`): a
-  `num_rows`-byte null map (1 = null, 0 = not null) immediately followed
-  by `T`'s own column data for *all* `num_rows` rows -- including the null
-  ones, whose underlying value is a meaningless placeholder (typically
-  `T`'s default/zero value) and is discarded here rather than decoded.
+  Dispatched from `ChDriver.Protocol.NativeBlock`'s `decode_column_data/3`,
+  which these functions recurse back into for their inner type(s) — that's
+  what lets deeply nested types like `Array(Nullable(String))` or
+  `Map(String, Array(UInt32))` decode correctly without any special-casing.
 
-  `Array(T)`'s wire format (per ClickHouse's `ColumnArray.cpp`
-  `deserializeBinaryBulkWithMultipleStreams`, matching clickhouse-driver
-  Python's `columns/arraycolumn.py`): a `num_rows`-long array of
-  cumulative little-endian `UInt64` offsets (`offsets[i]` is the end
-  index, exclusive, of row i's elements in the flattened value array
-  below -- so `offsets[num_rows - 1]` is the total element count across
-  every row), immediately followed by the flattened element values for
-  *all* rows, decoded via `T`'s own `decode_column_data/3` (recursively --
-  this is what lets `Array(Nullable(String))`, `Array(Array(UInt32))`,
-  etc. all work).
-
-  `Map(K, V)`'s wire format: ClickHouse's own documentation and
-  `DataTypeMap.cpp` state that `Map(K, V)` is implemented internally as
-  `Array(Tuple(K, V))`, and its wire encoding follows that exactly --
-  `num_rows`-long cumulative little-endian `UInt64` offsets (identical to
-  `Array(T)`'s own offsets), immediately followed by the *whole flattened
-  key column* (`total_elements` values of `K`, decoded via `K`'s own
-  `decode_column_data/3`) and then the *whole flattened value column*
-  (`total_elements` values of `V`) -- i.e. a `Tuple(K, V)` column is
-  serialized as one sub-stream per tuple field, back to back, not as
-  interleaved (key, value) pairs. Interpreting the bytes as "all offsets,
-  then all keys, then all values" round-trips `{'a':1,'b':2}` correctly,
-  while an interleaved-pairs reading does not (it misaligns the `String`
-  length-prefix bytes against unrelated `UInt32` value bytes). `Tuple(...)`
-  itself is not supported as a directly-selectable column type -- only as
-  `Map`'s implicit internal representation -- since generalizing it would
-  need arbitrary-arity tuple parsing/decoding for no currently-needed
-  benefit.
-
-  `LowCardinality(T)`'s wire format is a dictionary-encoded column
-  (matches `ColumnLowCardinality.cpp`/`SerializationLowCardinality.cpp`
-  and clickhouse-driver Python's `columns/lowcardinalitycolumn.py`):
-
-      key_version (UInt64) -- always 1
-        (`SharedDictionariesWithAdditionalKeys`); not otherwise used here.
-      index_type_and_flags (UInt64) -- the low byte is the *index type*
-        (0 = UInt8, 1 = UInt16, 2 = UInt32, 3 = UInt64 -- the width of
-        each per-row dictionary index below); the remaining bits are
-        flags (bit 9 = HasAdditionalKeysBit, bit 10 =
-        NeedUpdateDictionaryBit) that are always set for a
-        single-block/non-globally-shared dictionary like this driver only
-        ever sees, and aren't otherwise interpreted here.
-      dictionary_size (UInt64) -- number of entries in the dictionary
-        that follows, including its implicit index-0 "default value"
-        entry (`""` for String, `0` for numeric types, etc).
-      dictionary_size entries of `T`'s own normal column encoding (e.g.
-        length-prefixed strings for `LowCardinality(String)`) -- decoded
-        via `T`'s own `decode_column_data/3`, same recursive pattern as
-        `Array`/`Nullable`.
-      index_count (UInt64) -- the number of per-row indices that follow;
-        equal to this column's `num_rows`.
-      index_count little-endian unsigned integers, each `index_type`
-        bytes wide, one per row -- each is an index into the dictionary
-        above.
-
-  A block with zero rows (ClickHouse sends one of these as a
-  structure-only "header" block ahead of the real data block(s) for every
-  query) writes zero bytes of column data for `LowCardinality`, exactly
-  like every other type here. Attempting to parse the
-  `key_version`/`index_type_and_flags`/`dictionary_size` fields
-  unconditionally hangs/times out the connection on an empty header
-  block, since there are no such bytes to read when there are no rows.
-
-  `Decimal(P, S)`'s wire format (matches ClickHouse's
-  `ColumnDecimal.h`/`DataTypeDecimalBase.h`, and clickhouse-driver
-  Python's `columns/decimalcolumn.py`): a fixed-width *signed*
-  little-endian integer holding the unscaled value, whose byte width is
-  chosen from the precision `P` alone (not stored on the wire --
-  `decimal_byte_size/1` mirrors ClickHouse's own
-  `DecimalUtils::decimalWidth`/`DataTypeDecimal` precision tiers), scaled
-  by `10^-S` into a `Decimal.t()`. `Decimal32(S)`/`Decimal64(S)`/
-  `Decimal128(S)`/`Decimal256(S)` are just fixed-precision aliases (9, 18,
-  38, and 76 respectively) for this same encoding -- see
-  `ChDriver.Types.parse_decimal/1`.
+  `Map(K, V)` values decode to plain Elixir maps; `Array(T)` and
+  `LowCardinality(T)` decode to lists; `Nullable(T)` decodes to the inner
+  value or `nil`; `Decimal(P, S)` decodes to a `Decimal.t()`. See
+  `ARCHITECTURE.md` for the wire-level byte layouts.
   """
 
   alias ChDriver.Protocol.NativeBlock

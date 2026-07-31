@@ -1,70 +1,17 @@
 defmodule ChDriver.Protocol.NativeBlock do
   @moduledoc """
-  Decodes ClickHouse's plaintext "Native" block format -- the payload of a
-  Data (or wire-identical ProfileEvents) packet once any compression
-  envelope has been stripped away.
+  Decodes ClickHouse's "Native" block format — the columns and rows of a
+  query result, once any compression envelope has been stripped away.
 
-  Compression is opt-in and defaults to off (`ChDriver.Protocol.encode_query/2`'s
-  `:compression` opt, `:none` by default). When it's off, blocks arrive
-  exactly as described below. When a query negotiates `:lz4` compression,
-  `decode_data_packet/2` routes the block body through
-  `ChDriver.Protocol.Block.Compressed.decode/1` first and hands this module the decompressed
-  bytes -- the format below is unchanged either way, since compression is
-  just an envelope around the same plain Native block bytes.
+  This is internal to the driver's decoding pipeline. A block carries its
+  column names, types, and row data; `decode_block/1` turns that into
+  `%{columns: [{name, type}], rows: [[term]]}`.
 
-  Format (matches `Formats/NativeReader.cpp`, protocol revision 54469):
-
-      external_table_name (string -- only present when this block is the
-        payload of a Data/ProfileEvents *packet*; see `decode_data_packet/1`)
-      BlockInfo:
-        repeated (field_num varint, value) pairs, terminated by field_num 0
-          field 1 -> is_overflows (UInt8)
-          field 2 -> bucket_num (Int32, little-endian)
-      num_columns (varint)
-      num_rows (varint)
-      num_columns times:
-        name (string)
-        type (string)
-        has_custom_serialization (UInt8 -- gated on
-          DBMS_MIN_REVISION_WITH_CUSTOM_SERIALIZATION, always present at
-          revision 54469; we only support has_custom == 0)
-        column data (num_rows values, encoding depends on type -- see
-          `decode_column_data/3`)
-
-  Only a pragmatic subset of ClickHouse's type system is supported --
-  enough to prove out `SELECT 1` / `SELECT number FROM system.numbers` and
-  to skip over the columns ClickHouse's own ProfileEvents packet sends
-  alongside every query result (String, DateTime, UInt64, Enum8, Int64).
-
-  This module owns block/packet framing and the top-level
-  `decode_column_data/3` type dispatch only. The rest of the type system
-  is split out by concern, matching how a new type or wrapper should be
-  added:
-
-    * `ChDriver.Types` -- parses a column *type string* (e.g.
-      `"Nullable(String)"`) into its component parts. Add a new
-      `parse_*/1` clause here for a new wrapper syntax.
-    * `ChDriver.Types.Registry` -- the scalar/fixed-width codec table
-      (`column_codec/1`) and the primitive wire readers
-      (`decode_fixed_width/4`, `decode_strings/3`) it hands out. Add a
-      new scalar ClickHouse type here.
-    * `ChDriver.Protocol.Block.Wrappers` -- decoders for `Nullable(T)`,
-      `Array(T)`, `Map(K, V)`, `LowCardinality(T)`, and `Decimal(P, S)`.
-      Add a new wrapper/compound decoder here, alongside a dispatch clause
-      in this module's `decode_column_data/3` and a parser in
-      `ChDriver.Types`.
-    * `ChDriver.Protocol.Block.Sparse` -- decodes MergeTree's "sparse"
-      column serialization (see its moduledoc for the full wire format).
-
-  `decode_column_data/3` is this module's extension point for new
-  wrapper/compound types: add a clause here that pattern-matches/parses
-  the type string via `ChDriver.Types`, plus a `decode_*` function in
-  `ChDriver.Protocol.Block.Wrappers`. Note that `decode_column_data/3`
-  recurses through `ChDriver.Protocol.Block.Wrappers` and
-  `ChDriver.Protocol.Block.Sparse` (that's what makes
-  `Array(Nullable(String))` work for free), so those modules call back
-  into this one across the module boundary -- deliberately fine in
-  Elixir, since none of the calls are macros.
+  Only a pragmatic subset of ClickHouse's type system is supported — see
+  `ChDriver.Types.Registry` for the scalar types and
+  `ChDriver.Protocol.Block.Wrappers` for compound types like `Array`,
+  `Map`, and `Nullable`. If you're adding support for a new ClickHouse
+  type, `ARCHITECTURE.md` has the map of which module owns what.
   """
 
   alias ChDriver.Protocol.Block.Sparse
@@ -74,21 +21,12 @@ defmodule ChDriver.Protocol.NativeBlock do
   alias ChDriver.Types.Registry
 
   @doc """
-  Decodes a Data/ProfileEvents *packet* body (i.e. everything after the
-  packet-type varint): the external table name string, followed by a
-  Native block.
+  Decodes a Data or ProfileEvents packet body: the external table name,
+  followed by a Native block.
 
-  The external table name is always plain, regardless of `compression`.
-  When `compression` is `:none` (the default), the block that follows is
-  decoded as plain bytes, exactly as before. When `compression` is
-  `:lz4`, the bytes following the external table name are first routed
-  through `ChDriver.Protocol.Block.Compressed.decode/1` -- a single compressed envelope wraps
-  exactly one block's worth of bytes (BlockInfo + columns + rows), so the
-  decompressed payload is handed to `decode_block/1` as-is, and whatever
-  `ChDriver.Protocol.Block.Compressed.decode/1` reports as unconsumed trailing bytes (`rest`)
-  is returned as this packet's `rest` -- it is the start of the *next*
-  packet (a fresh packet-type varint), not necessarily another compressed
-  envelope, since only block bodies are ever wrapped.
+  `compression` (`:none` (default) or `:lz4`) must match whatever was
+  negotiated for this query — when `:lz4`, the block is decompressed
+  before decoding.
 
   Returns `{:ok, %{table_name:, columns:, rows:}, rest}`,
   `{:incomplete, binary}`, or `{:error, reason}`.

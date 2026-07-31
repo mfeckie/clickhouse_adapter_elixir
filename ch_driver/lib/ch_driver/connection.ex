@@ -1,16 +1,20 @@
 defmodule ChDriver.Connection do
   @moduledoc """
-  Socket-level connection setup and query execution for ClickHouse's
-  native TCP protocol.
+  Opens a TCP connection to ClickHouse and runs queries over it.
 
-  `connect/1` opens the TCP socket and performs the initial Hello
-  handshake (ClientHello sent, ServerHello parsed). `query/3` runs a
-  query to completion and collects the full result; `start_stream/3` +
-  `stream_fetch/2` + `cancel_stream/2` provide the block-at-a-time
-  streaming API `ChDriver.DBConnection` drives for `ChDriver.stream/2,3,4`.
-  `ping/1` sends a bare Ping/Pong round-trip. Packet encode/decode itself
-  lives in `ChDriver.Protocol`; this module owns socket I/O, buffering,
-  and packet-loop dispatch on top of it.
+  This is the low-level connection API that `ChDriver.DBConnection` wraps
+  to plug into `DBConnection`'s pooling. You'd only call it directly if
+  you're managing a single raw connection yourself.
+
+  * `connect/1` opens the socket and performs the Hello handshake.
+  * `query/3` runs a query to completion and returns the full result.
+  * `start_stream/3`, `stream_fetch/2`, and `cancel_stream/2` run a query
+    and read its result back one block at a time instead of all at once.
+  * `ping/1` checks the connection is alive.
+
+  Packet encoding/decoding itself lives in `ChDriver.Protocol`; this module
+  owns the socket, buffering incoming bytes, and looping over the response
+  packets a query produces.
   """
 
   alias ChDriver.Protocol
@@ -46,22 +50,16 @@ defmodule ChDriver.Connection do
     * `:recv_timeout` - `:gen_tcp.recv/3` timeout in ms, defaults to `5_000`
     * `:max_buffer_size` - maximum accumulated receive-buffer size in bytes
       before the handshake fails fast with `{:error, %ChDriver.Error{}}`
-      rather than growing the buffer unbounded, defaults to `#{@default_max_buffer_size}`
-      (64MB, matching Postgrex's `@max_packet`)
-    * `:compression` - `:none` (default) or `:lz4`. Opt-in wire compression
-      for `query/3`'s outbound/inbound Data blocks -- off by default so
-      existing callers see byte-for-byte unchanged behavior. This is a
+      instead of growing the buffer without limit, defaults to
+      `#{@default_max_buffer_size}` (64MB)
+    * `:compression` - `:none` (default) or `:lz4`. Turns on wire
+      compression for this connection's query result blocks. Acts as a
       per-connection default; `query/3`'s own `opts` can override it per
-      call. See `ChDriver.Protocol.Messages.encode_query/2`'s moduledoc for
-      exactly how this is negotiated with the server and why both
-      directions of block traffic are affected. The only unsupported value
-      besides these two raises `ArgumentError` rather than silently falling
-      back to uncompressed.
+      call. Any other value raises `ArgumentError`.
 
   Returns `{:ok, %{socket: socket, server_info: %ChDriver.Protocol.ServerHello{}, compression: :none | :lz4}}`
   on success, or `{:error, reason}` on failure. The caller owns the
-  returned socket and is responsible for closing it (see
-  `ChDriver.Connection.close/1`).
+  returned socket and is responsible for closing it with `close/1`.
   """
   @spec connect(keyword) ::
           {:ok,
@@ -174,34 +172,19 @@ defmodule ChDriver.Connection do
 
   @doc """
   Runs `query_string` against the connection returned by `connect/1` and
-  collects the result.
+  collects the full result.
 
-  Sends a Query packet followed by an empty Data packet (required even for
-  plain SELECTs -- see `ChDriver.Protocol.encode_empty_data_packet/0`),
-  then loops reading and dispatching response packets. `opts` is forwarded
-  to `ChDriver.Protocol.encode_query/2` unchanged, so a `:params` list of
-  `{name, raw_text}` or `{name, raw_text, escape_rounds}` tuples binds that
-  query's `{name:Type}` placeholders (see `ChDriver.Params.text/1`
-  and `ChDriver.Params.escape_rounds/1`).
-
-    * `Data`/`ProfileEvents` packets are accumulated (columns come from the
-      first Data packet seen with a non-empty column list -- ClickHouse
-      sends an empty "header" block first, then one or more Data blocks
-      with actual rows; ProfileEvents blocks are ignored for the returned
-      result but decoded/consumed so the wire stays in sync).
-    * `Progress` packets are ignored (no streaming/partial-result API yet).
-    * `Pong` is ignored (only relevant to `ping/1`, not implemented yet).
-    * `EndOfStream` ends the loop successfully.
-    * `Exception` ends the loop with `{:error, %ChDriver.Error{}}`.
+  `opts[:params]` binds `query_string`'s `{name:Type}` placeholders — a list
+  of `{name, raw_text}` or `{name, raw_text, escape_rounds}` tuples (see
+  `ChDriver.Params.text/1` and `ChDriver.Params.escape_rounds/1` for
+  building these from Elixir values).
 
   `opts[:compression]` (`:none` or `:lz4`) overrides the connection's
-  default (the `:compression` passed to `connect/1`, `:none` if that
-  wasn't given either) for this one query -- see `connect/1`'s docs and
-  `ChDriver.Protocol.Messages.encode_query/2`'s moduledoc for what this
-  negotiates with the server.
+  default compression setting for this one query.
 
   Returns `{:ok, %{columns: [{name, type}], rows: [[term]]}}` or
-  `{:error, term}` (either a socket error or a `%ChDriver.Error{}`).
+  `{:error, term}` — either a socket error, or a `%ChDriver.Error{}` if
+  ClickHouse rejected the query.
   """
   @spec query(map, binary, keyword) :: {:ok, map} | {:error, term}
   def query(%{socket: socket} = conn, query_string, opts \\ []) do
@@ -312,27 +295,16 @@ defmodule ChDriver.Connection do
   end
 
   @doc """
-  Starts `query_string` the same way `query/3` does (Query packet + empty
-  Data packet), but instead of looping internally to `:end_of_stream` and
-  accumulating every row into memory, stops after receiving just one
-  block's worth of response -- ClickHouse's own "header" block (0 rows,
-  but with the result's column names/types) -- and returns a small,
-  stateful "stream" map that `stream_fetch/2` resumes from on demand.
+  Starts running `query_string` for block-at-a-time streaming, instead of
+  reading the whole result the way `query/3` does.
 
-  This is what `ChDriver.DBConnection`'s `handle_declare/4` calls: the
-  returned map (`%{columns:, buffer:, done:, recv_timeout:,
-  max_buffer_size:, compression:, pending:}`) is exactly the "cursor"
-  state that needs to persist across `handle_fetch/4` calls -- the
-  socket itself is `conn.socket` (unchanged, owned by the connection the
-  whole time), `buffer` is the unconsumed tail of whatever was already
-  read off it, and `pending` holds the header block's own rows (almost
-  always `[]`, but a tiny result can in principle arrive combined with
-  the header in a single block -- see the moduledoc note on
-  `receive_stream_block/6` -- so this is never silently dropped) for the
-  first `stream_fetch/2` call to hand back without doing any socket I/O.
+  Sends the query and reads just far enough to know the result's column
+  names/types, then returns a stream handle that `stream_fetch/2` reads
+  further blocks from on demand.
 
   Returns `{:ok, stream}` or `{:error, reason}` (a socket error or a
-  `%ChDriver.Error{}`, exactly like `query/3`).
+  `%ChDriver.Error{}`, exactly like `query/3`). `stream` is opaque — pass
+  it straight to `stream_fetch/2` and `cancel_stream/2`.
   """
   @spec start_stream(map, binary, keyword) :: {:ok, map} | {:error, term}
   def start_stream(%{socket: socket} = conn, query_string, opts \\ []) do
@@ -410,20 +382,12 @@ defmodule ChDriver.Connection do
   end
 
   @doc """
-  Resumes a stream previously started by `start_stream/3` (or a prior
-  call to this function), returning exactly one Data block's worth of
-  rows -- the natural unit the wire protocol already delivers, so there's
-  no artificial row-count-based rebatching here.
-
-  If `stream.pending` is set (the header block's own rows, stashed by
-  `start_stream/3` and not yet handed back), returns that directly
-  without touching the socket at all. Otherwise resumes the receive loop
-  from `stream.buffer` on `socket`.
+  Fetches the next block of a stream started by `start_stream/3`.
 
   Returns `{:cont, %{columns:, rows:}, stream}` while more blocks remain,
-  `{:halt, %{columns:, rows:}, stream}` once `:end_of_stream` is reached
-  (`stream.done` is `true` from then on, and every further call returns
-  the same empty `:halt` immediately), or `{:error, reason}`.
+  `{:halt, %{columns:, rows:}, stream}` once the result is exhausted (every
+  further call then returns the same empty `:halt` immediately), or
+  `{:error, reason}`.
   """
   @spec stream_fetch(:gen_tcp.socket(), map) :: {:cont | :halt, map, map} | {:error, term}
   def stream_fetch(_socket, %{pending: {status, rows}} = stream) do
@@ -457,24 +421,14 @@ defmodule ChDriver.Connection do
   end
 
   @doc """
-  Cleans up a stream previously started by `start_stream/3`, for
-  `ChDriver.DBConnection`'s `handle_deallocate/4`.
+  Stops a stream started by `start_stream/3` and leaves the connection
+  ready for the next query.
 
-  If the stream already reached `:end_of_stream` (`stream.done` is
-  `true` -- the caller consumed every block via `stream_fetch/2`), there
-  is nothing left in flight and this is a no-op returning `:ok`
-  immediately.
-
-  Otherwise (the caller stopped early, e.g. `Enum.take/2` on a partially
-  consumed stream) there is no server-side portal/cursor to close the
-  way Postgres has -- but ClickHouse's native protocol does have a
-  Cancel packet (Client packet type 3): this sends it, then keeps
-  draining and discarding blocks off the same socket/buffer until
-  `:end_of_stream` (blocks already in flight before the server notices
-  the cancellation can still arrive), so the connection is left in a
-  clean, byte-position-correct state for the next query instead of
-  leaking unread bytes that would desync the very next request sent on
-  this socket.
+  If the stream already ran to completion, this is a no-op. Otherwise
+  (e.g. the caller did `Enum.take/2` on a large stream and stopped early)
+  it tells ClickHouse to cancel the query and drains any blocks still in
+  flight, so the socket ends up in a clean state for whatever query you
+  run next.
 
   Returns `:ok` or `{:error, reason}`.
   """

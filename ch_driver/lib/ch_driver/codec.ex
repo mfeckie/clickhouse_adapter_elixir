@@ -1,24 +1,16 @@
 defmodule ChDriver.Codec do
   @moduledoc """
-  LZ4 block compression and CityHash v1.0.2 checksums for ClickHouse's
-  native protocol block framing.
+  LZ4 compression and CityHash checksums, backed by a Rust NIF.
 
-  ClickHouse wraps every block (compressed or not) in a fixed envelope:
+  These are the low-level primitives ClickHouse's wire compression is built
+  on: `lz4_compress/1` and `lz4_decompress/2` work with raw LZ4 blocks (not
+  the LZ4 Frame format), and `cityhash128/1` computes the checksum
+  ClickHouse uses to verify each compressed block.
 
-      [16 bytes] CityHash128 checksum (over everything below)
-      [1 byte]   compression method marker
-      [4 bytes]  compressed size, little-endian (header + payload)
-      [4 bytes]  uncompressed size, little-endian
-      [...]      payload
-
-  This module provides the two primitives needed to build and verify that
-  envelope: `lz4_compress/1` and `lz4_decompress/2` operate on the raw LZ4
-  block format (not the LZ4 Frame format), and `cityhash128/1` returns the
-  16-byte checksum already packed in ClickHouse's on-wire byte order.
-
-  This is the Rust-NIF-backed half of `ch_driver`'s compressed block
-  envelope support; see `ChDriver.Protocol.Block.Compressed` for the pure
-  Elixir envelope encoding/decoding built on top of these primitives.
+  You won't normally call this module directly — `ChDriver.Protocol.Block.Compressed`
+  builds the full block envelope on top of it. It's public because the
+  primitives are useful on their own if you need raw LZ4/CityHash outside
+  the driver.
   """
 
   alias ChDriver.Codec.Native
@@ -28,9 +20,11 @@ defmodule ChDriver.Codec do
   def lz4_compress(data), do: Native.lz4_compress(IO.iodata_to_binary(data))
 
   @doc """
-  Decompresses a raw LZ4 block. `uncompressed_size` must be known ahead of
-  time (ClickHouse carries it in the block header) since the raw block
-  format has no length prefix of its own.
+  Decompresses a raw LZ4 block.
+
+  `uncompressed_size` must be known ahead of time — the raw LZ4 block
+  format has no length prefix of its own, so the caller has to supply it
+  (ClickHouse carries it in the block header).
   """
   @spec lz4_decompress(iodata, non_neg_integer) :: {:ok, binary} | {:error, String.t()}
   def lz4_decompress(data, uncompressed_size) do

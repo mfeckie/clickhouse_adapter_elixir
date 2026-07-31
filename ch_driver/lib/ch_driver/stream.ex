@@ -1,26 +1,14 @@
 defmodule ChDriver.Stream do
   @moduledoc """
-  An `Enumerable` that lazily executes a query and yields its rows one
-  ClickHouse wire-protocol Data block at a time, instead of buffering the
-  whole result in memory the way `ChDriver.query/2,3,4` does.
+  An `Enumerable` that streams a query's rows one wire-protocol block at a
+  time, instead of loading the whole result into memory.
 
-  Built by `ChDriver.stream/2,3,4` -- see its docs for why `conn` must
-  already be a checked-out `%DBConnection{}` (obtained via
-  `DBConnection.run/3` or `DBConnection.transaction/3`), and for a usage
-  example. All fields are private; this struct only exists so
-  `defimpl Enumerable` below has something to dispatch on.
+  Built by `ChDriver.stream/2,3,4` — see its docs for a usage example. All
+  fields are private.
 
-  Reducing over a `ChDriver.Stream` delegates straight to
-  `DBConnection.reduce/3` via a plain `%DBConnection.Stream{}` (not
-  `DBConnection.PrepareStream`) -- `query` is always a `%ChDriver.Query{}`
-  struct, never a bare SQL string, so there's no separate "prepare first"
-  path to distinguish the way `Postgrex.Stream`'s `Enumerable` impl does
-  for its two possible `query` shapes (see `postgrex/lib/postgrex/stream.ex`).
-  `DBConnection.reduce/3` drives `ChDriver.DBConnection`'s `handle_declare/4`,
-  `handle_fetch/4`, and `handle_deallocate/4` (see their docs) via
-  `Stream.resource/3` under the hood, so cleanup (`handle_deallocate/4`)
-  runs whether the consumer takes everything (`Enum.to_list/1`) or stops
-  early (`Enum.take/2`, a `break` out of a `for`, an exception, ...).
+  Cleanup runs whether the consumer takes everything (`Enum.to_list/1`) or
+  stops early (`Enum.take/2`, a `break`, a raised exception, ...) — the
+  underlying query gets cancelled properly either way.
   """
   @derive {Inspect, only: []}
   defstruct [:conn, :query, :params, :opts]

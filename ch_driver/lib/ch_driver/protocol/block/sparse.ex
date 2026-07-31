@@ -1,56 +1,15 @@
 defmodule ChDriver.Protocol.Block.Sparse do
   @moduledoc """
-  ## Sparse serialization
+  Decodes ClickHouse's "sparse" column serialization.
 
-  ClickHouse automatically stores a MergeTree column using "sparse"
-  serialization once enough of its values equal the type's default (see
-  `ratio_of_defaults_for_sparse_serialization`, default `0.9`), regardless
-  of whether the user asked for it. On the wire this shows up as the
-  `has_custom_serialization` byte (see
-  `ChDriver.Protocol.NativeBlock`'s `decode_serialization_kind/3`) being `1`,
-  followed by one more `UInt8` "serialization kind" byte (per ClickHouse's
-  `ISerialization::Kind` enum in `ISerialization.h` and
-  `SerializationInfo::deserializeFromKindsBinary` in
-  `SerializationInfo.cpp`): `0` = `DEFAULT` (never actually sent, since
-  `hasCustomSerialization()` is false whenever `kind == DEFAULT` --
-  `NativeWriter.cpp` only writes the kind byte at all when
-  `has_custom_serialization` is 1) and `1` = `SPARSE`, the only other kind
-  that exists as of ClickHouse 24.8. Any other byte value is rejected with a
-  clear error rather than guessed at, since it would mean a newer
-  ClickHouse serialization kind this driver doesn't understand.
+  ClickHouse automatically switches a MergeTree column to sparse storage
+  once most of its values equal the type's default, whether or not anyone
+  asked for it — so this driver needs to understand the format for any
+  query against a real table, not just an opt-in feature. See
+  `ARCHITECTURE.md` for the full wire format if you're modifying this.
 
-  Sparse's own column-data encoding (matches
-  `SerializationSparse.cpp`'s `serializeOffsets`/`deserializeOffsets`/
-  `deserializeBinaryBulkWithMultipleStreams`) is two back-to-back
-  substreams -- *not* a null-map-style parallel array like `Nullable`:
-
-    * `SparseOffsets`: a sequence of `UInt64` varints, each a "group size"
-      -- the number of consecutive default-valued rows since the last
-      non-default row (or since the start of the block) -- immediately
-      followed by exactly one non-default row (whose actual value lives in
-      the `SparseElements` substream below, densely packed, one entry per
-      group). The final varint in the sequence has bit 62
-      (`END_OF_GRANULE_FLAG` = `1 <<< 62`, chosen because ClickHouse's
-      varints only ever carry values `< 2^63`) set, and its low bits are the
-      count of trailing default rows with no following value -- this is how
-      the reader knows to stop without needing to know the offset-stream's
-      byte length up front. E.g. for 10 rows with non-default values at
-      (0-indexed) rows 2 and 5, the stream is the three varints `2`, `2`,
-      `4 | END_OF_GRANULE_FLAG` (2 defaults, 1 value, 2 defaults, 1 value, 4
-      trailing defaults, done) -- there is always at least one flagged
-      varint, even for an all-default or zero-row block.
-    * `SparseElements`: exactly as many densely-packed values of the inner
-      type as there were non-default rows above, decoded via that type's
-      own `decode_column_data/3` (recursively, same pattern as
-      `Nullable`/`Array` in `ChDriver.Protocol.Block.Wrappers`).
-
-  Decoding reconstructs the full `num_rows`-length column by walking the
-  offsets and interleaving the decoded non-default values at their
-  positions with the inner type's own default value (`0`/`0.0`/`""`/`nil`/
-  `[]`/`%{}`/etc, per `default_value/1`) everywhere else. Only inner types
-  `default_value/1` knows how to produce a default for are supported;
-  anything else surfaces as `{:error, {:unsupported_sparse_default, type}}`
-  rather than guessing.
+  Only inner types with a known default value are supported; anything else
+  surfaces as `{:error, {:unsupported_sparse_default, type}}`.
   """
 
   alias ChDriver.Protocol.NativeBlock
@@ -63,13 +22,10 @@ defmodule ChDriver.Protocol.Block.Sparse do
   @end_of_granule_flag 0x4000000000000000
 
   @doc """
-  Sparse's wire format (see this module's moduledoc for the full
-  byte-level explanation; matches `SerializationSparse.cpp`): a
-  `SparseOffsets` varint stream giving the position of every non-default
-  row, followed by a `SparseElements` stream of exactly that many
-  densely-packed values of `inner_type`, decoded via
-  `ChDriver.Protocol.NativeBlock`'s `decode_column_data/3` like any other
-  wrapper type.
+  Decodes a sparse-serialized column of `inner_type` with `num_rows` rows
+  from the front of `binary`.
+
+  Returns `{:ok, values, rest}`, `{:error, reason}`, or `{:incomplete, binary}`.
   """
   def decode_sparse(inner_type, num_rows, binary) do
     with {:ok, offsets, rest} <- decode_sparse_offsets(binary),
@@ -84,13 +40,11 @@ defmodule ChDriver.Protocol.Block.Sparse do
   end
 
   @doc """
-  Reads `SparseOffsets`: repeated `(group_size, value)` pairs -- where
-  `group_size` is the count of default rows immediately preceding that
-  value's row -- terminated by one final flagged varint (bit 62 set)
-  giving the count of trailing default rows with no following value.
-  Returns the 0-indexed row position of every non-default value, in
-  ascending order (matching the order their values appear in the
-  following `SparseElements` stream).
+  Reads the `SparseOffsets` varint stream from the front of `binary`.
+
+  Returns `{:ok, offsets, rest}` where `offsets` is the 0-indexed row
+  position of every non-default value, in ascending order, or
+  `{:incomplete, binary}`.
   """
   def decode_sparse_offsets(binary), do: do_decode_sparse_offsets(binary, 0, [])
 

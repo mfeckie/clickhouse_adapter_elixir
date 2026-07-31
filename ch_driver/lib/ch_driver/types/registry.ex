@@ -1,62 +1,15 @@
 defmodule ChDriver.Types.Registry do
   @moduledoc """
-  The scalar/fixed-width type codec table (`column_codec/1`) plus the
-  primitive wire readers it hands out: `decode_fixed_width/4` (fixed-width
-  binary chunks, one per row, each run through a per-type unpack function)
-  and `decode_strings/3` (ClickHouse's length-prefixed `String` encoding).
+  The scalar/fixed-width column type codec table, plus the primitive wire
+  readers it's built on.
 
-  A pragmatic subset of ClickHouse's type system: fixed-width integer and
-  float types (by exact name), `String`, and a handful of common types
-  (`DateTime`, `Enum8`/`Enum16`, `UUID`, `IPv4`, `IPv6`) that show up in
-  ClickHouse's own ProfileEvents packets sent alongside every query
-  result, or that this driver otherwise supports end to end. Not a general
-  type system -- see `ChDriver.Protocol.NativeBlock`'s moduledoc for the
-  full list of what this driver supports and where each piece lives.
-  Adding a new scalar ClickHouse type is a one-line addition to
-  `column_codec/1` here.
+  Covers ClickHouse's fixed-width integer and float types, `String`,
+  `DateTime`, `Enum8`/`Enum16`, `UUID`, `IPv4`, and `IPv6`. Adding a new
+  scalar type is a one-line addition to `column_codec/1`.
 
-  `UUID`'s wire format: 16 bytes, laid out as the UUID's standard 16
-  text-representation bytes with *each 8-byte half byte-reversed
-  independently* -- i.e. NOT the naive byte order, and NOT a swap of the
-  two halves either. Concretely, for UUID
-  `61f0c404-5cb3-11e7-907b-a6006ad3dba0` (standard bytes
-  `61 f0 c4 04 5c b3 11 e7 90 7b a6 00 6a d3 db a0`), ClickHouse's raw
-  in-memory/wire bytes are
-  `e7 11 b3 5c 04 c4 f0 61 a0 db d3 6a 00 a6 7b 90` -- reversing bytes
-  0..7 and, separately, bytes 8..15 of the wire form recovers the
-  standard form byte-for-byte.
-
-  `IPv4`'s wire format (`hex(reinterpretAsFixedString(
-  toIPv4('192.168.1.1')))` -> `0101A8C0`, i.e. the same little-endian
-  `UInt32` encoding as every other ClickHouse integer type --
-  `192.168.1.1` is `0xC0A80101` as a plain big-endian-read integer, and
-  the wire bytes `01 01 A8 C0` are exactly that value's little-endian byte
-  order): decoded to the dotted-quad text form (matching this module's
-  `UUID` decode-to-text convention) by re-reading the same 4 bytes as a
-  big-endian `UInt32` and splitting into octets.
-
-  `IPv6`'s wire format (`hex(reinterpretAsFixedString(
-  toIPv6('2001:db8::1')))` -> `20010DB8000000000000000000000001`, and
-  `hex(reinterpretAsFixedString(toIPv6('::ffff:192.168.1.1')))` ->
-  `00000000000000000000FFFFC0A80101`): a plain 16-byte value in standard
-  network byte order -- i.e. byte-for-byte identical to the address's
-  normal text-form byte layout, with **no** reversal of any kind (unlike
-  `UUID`, whose wire form independently byte-reverses each 8-byte half).
-  Decoded to the standard colon-hex text form via `:inet.ntoa/1` on the 8
-  big-endian 16-bit groups.
-
-  `FixedString(N)`'s wire format (`hex(toFixedString('ab', 5))` ->
-  `6162000000`; matches `DataTypeFixedString.cpp`'s
-  `deserializeBinaryBulk`): exactly `N` raw bytes per row, right-padded
-  with `0x00` up to `N` if the value is shorter -- unlike `String`, there
-  is no length-prefix varint at all, and unlike `String`'s own
-  null-termination-free encoding, the padding bytes are real wire
-  content. ClickHouse does **not** trim the padding back out on
-  `SELECT` -- the padded value is the column's actual value -- so this
-  decodes to the raw `N`-byte binary verbatim, trailing NULs included,
-  via `decode_fixed_width/4` with an identity unpack function (see
-  `ChDriver.Types.parse_fixed_string/1`'s call site in
-  `ChDriver.Protocol.NativeBlock`'s `decode_column_data/3`).
+  `UUID` values decode to their standard hyphenated text form. `IPv4`/`IPv6`
+  decode to dotted-quad / colon-hex text. `DateTime` decodes to a UTC
+  `DateTime.t()`.
   """
 
   alias ChDriver.Protocol.Varint

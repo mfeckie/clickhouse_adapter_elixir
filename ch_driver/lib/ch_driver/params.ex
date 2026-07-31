@@ -1,24 +1,21 @@
 defmodule ChDriver.Params do
   @moduledoc """
-  Turns an Elixir value into a ClickHouse query parameter: the declared
-  `{name:Type}` type name, the unquoted/unescaped literal text, and the
-  wire-level escaping depth that text needs.
+  Converts Elixir values into ClickHouse query parameters.
 
-  This is the single place that mapping lives -- `ChDriver.Protocol`'s
-  `encode_query/2` calls `text/1` and `escape_rounds/1` to build the wire
-  bytes for a parameter's value, and
-  `Ecto.Adapters.ClickHouse.Connection` calls `type/1` to build the
-  matching `{name:Type}` placeholder text. Keeping both halves of the
-  mapping in one module (rather than hand-synced across the two projects)
-  is what guarantees a value's declared type and its rendered text always
-  agree.
+  Every bound query parameter needs three things: a ClickHouse type name
+  for its `{name:Type}` placeholder, the literal text of its value, and how
+  many rounds of escaping that text needs on the wire. `type/1`, `text/1`,
+  and `escape_rounds/1` produce each of those from a plain Elixir value;
+  `encode/1` returns all three at once.
+
+  `nil` isn't supported here — see `text/1`'s docs.
   """
 
   @doc """
-  Turns an Elixir term into `{type, text, rounds}` in one call: the
-  ClickHouse type name for its `{name:Type}` placeholder (see `type/1`),
-  the literal text for its value (see `text/1`), and the escaping depth
-  that text needs on the wire (see `escape_rounds/1`).
+  Encodes `term` as `{type, text, rounds}` — the ClickHouse type name for
+  its `{name:Type}` placeholder (see `type/1`), the literal text for its
+  value (see `text/1`), and the escaping depth that text needs on the wire
+  (see `escape_rounds/1`).
   """
   @spec encode(term) :: {binary, binary, 1 | 2}
   def encode(term) do
@@ -33,11 +30,11 @@ defmodule ChDriver.Params do
   # NULL parameter fails to bind against an `Int32` column with "Attempt
   # to read after eof... while converting '' to Int32").
   @doc """
-  Maps an Elixir runtime value to the ClickHouse type name used in its
-  `{name:Type}` placeholder (e.g. `5 -> "Int64"`).
+  Maps an Elixir value to the ClickHouse type name for its `{name:Type}`
+  placeholder, e.g. `5 -> "Int64"`, `"hi" -> "String"`.
 
-  There's no clause for `nil` -- see the moduledoc-adjacent note on
-  `text/1` for why.
+  Raises `ArgumentError` for `nil` and for any type this driver doesn't
+  know how to bind — see `text/1` for why `nil` isn't supported.
   """
   @spec type(term) :: binary
   def type(b) when is_binary(b), do: "String"
@@ -58,18 +55,13 @@ defmodule ChDriver.Params do
   end
 
   @doc """
-  Renders an Elixir term as the unquoted, unescaped ClickHouse literal
-  text a query parameter's value should carry -- the same text you'd
-  type after a `CAST(..., 'Type')` for that value. `ChDriver.Protocol`'s
-  `encode_query/2` applies the wire-level quoting/escaping on top of this
-  (see `quote_param_value/2`); this function only handles turning the
-  value itself into ClickHouse literal syntax.
+  Renders an Elixir term as ClickHouse literal text — the same text you'd
+  write after `CAST(..., 'Type')` for that value, unquoted and unescaped.
 
-  There is no clause for `nil`: ClickHouse's query
-  parameters have no type-independent way to express NULL (a
-  `Nullable(String)`-typed NULL parameter fails to bind against, say, an
-  `Int32` column), so callers should inline a literal `NULL` into the
-  query text instead of routing `nil` through this.
+  There's no clause for `nil`: ClickHouse query parameters have no
+  type-independent way to express NULL. If your value can be `nil`, inline
+  a literal `NULL` into the query text yourself instead of binding it as a
+  parameter.
   """
   @spec text(term) :: binary
   def text(b) when is_binary(b), do: b
@@ -110,29 +102,15 @@ defmodule ChDriver.Params do
   end
 
   @doc """
-  The number of backslash/quote-escaping rounds the wire encoder
-  (`ChDriver.Protocol.encode_query/2`) must apply to bind `value` for it
-  to round-trip -- `1` for a list (the `Array` literal text `text/1`
-  renders for it already has its string elements `\\'`-escaped once, see
-  `array_element_text/1`), `2` for everything else.
+  How many rounds of backslash/quote escaping `value`'s bound text needs
+  to round-trip through ClickHouse correctly: `1` for a list, `2` for
+  everything else.
 
-  The server unescapes a scalar parameter's value text *twice* before
-  parsing it against the declared type, but only *once* for each string
-  inside an `Array(String)`/`Map` value's already-quoted element syntax.
-  A scalar value escaped only once loses backslashes asymmetrically (an
-  odd leftover backslash fuses with the next character into an
-  unintended escape, e.g. `\\b` becomes a backspace byte), while escaping
-  it twice round-trips exactly. An `Array(String)` value escaped *twice*,
-  on the other hand, corrupts its already-`\\'`-escaped elements, because
-  the array parses each element with a single-escape "Quoted" reader,
-  one level shallower than the plain scalar path
-  (`ReplaceQueryParameterVisitor` re-parses a scalar's already-unescaped
-  custom-setting value as escaped text a second time, but does not do so
-  for array elements). This is undocumented ClickHouse behavior, treated
-  here as a black-box wire fact rather than a designed feature.
-
-  Takes the same Elixir term `text/1` would be called with, not its
-  rendered text.
+  Takes the same Elixir term you'd pass to `text/1`, not its rendered text.
+  See `ChDriver.Query`'s wire encoding for where this gets applied — the
+  two escaping depths aren't arbitrary, they match how ClickHouse's server
+  actually unescapes scalar values vs. array elements (see
+  `ARCHITECTURE.md` if you're curious why).
   """
   @spec escape_rounds(term) :: 1 | 2
   def escape_rounds(list) when is_list(list), do: 1
