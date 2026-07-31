@@ -97,13 +97,38 @@ defmodule Ecto.Adapters.ClickHouse.Connection do
      )}
   end
 
+  @doc """
+  Builds a `%ChDriver.Stream{}` (see its moduledoc, and
+  `ChDriver.DBConnection`'s "Cursors" section, for exactly how this stays
+  genuinely incremental -- one ClickHouse wire-protocol Data block at a
+  time -- rather than buffering the whole result first) for `statement`,
+  mirroring every other `Ecto.Adapters.SQL.Connection.stream/4`
+  implementation (e.g. `Postgrex.Connection.stream/4`, which just calls
+  `Postgrex.stream/4`).
+
+  `conn` here is always already a checked-out `%DBConnection{conn_mode:
+  :transaction}` by the time this is called -- `Ecto.Adapters.SQL.reduce/6`
+  (which backs `Repo.stream/2`) guards on exactly that mode before ever
+  reaching here (see `ecto_sql/lib/ecto/adapters/sql.ex`), the same
+  requirement every SQL adapter's `Repo.stream/2` has (Postgres included).
+
+  KNOWN LIMITATION: unlike Postgres, `ChDriver.DBConnection` has no
+  `handle_begin/2` (see its moduledoc -- ClickHouse's native protocol as
+  used here has no session transaction support), so `Repo.transaction/2`
+  itself cannot succeed on this adapter yet, which means `Repo.stream/2`
+  cannot be driven end-to-end through `Ecto.Repo.transaction/2` the
+  normal way. This function, and the underlying `ChDriver.Stream`
+  machinery, are fully real and independently tested (`ch_driver/test/
+  ch_driver/stream_test.exs`, `adapter/test/integration/stream_test.exs`)
+  via `DBConnection.run/3` directly (which only needs a plain checkout,
+  not a transaction) -- adding real ClickHouse-transaction support to
+  unblock `Repo.transaction/2`/`Repo.stream/2` end-to-end is tracked
+  separately (see the adapter-level stream test's moduledoc).
+  """
   @impl true
-  def stream(_conn, _statement, _params, _opts) do
-    raise RuntimeError,
-          "Repo.stream/2 is not supported by the ClickHouse adapter: ChDriver.DBConnection " <>
-            "has no cursor support (handle_declare/handle_fetch are unimplemented stubs) " <>
-            "because the ClickHouse native protocol used here has no server-side cursor " <>
-            "concept -- use Repo.all/2 instead"
+  def stream(conn, statement, params, opts) do
+    statement = if is_binary(statement), do: statement, else: IO.iodata_to_binary(statement)
+    ChDriver.stream(conn, statement, params, opts)
   end
 
   @impl true
@@ -132,8 +157,17 @@ defmodule Ecto.Adapters.ClickHouse.Connection do
   defdelegate delete_all(query), to: QueryBuilder
 
   @impl true
-  defdelegate insert(prefix, table, header, rows, on_conflict, returning, placeholders, opts \\ []),
-    to: QueryBuilder
+  defdelegate insert(
+                prefix,
+                table,
+                header,
+                rows,
+                on_conflict,
+                returning,
+                placeholders,
+                opts \\ []
+              ),
+              to: QueryBuilder
 
   @impl true
   defdelegate update(prefix, table, fields, filters, returning), to: QueryBuilder
@@ -161,6 +195,4 @@ defmodule Ecto.Adapters.ClickHouse.Connection do
 
   @impl true
   defdelegate table_exists_query(table), to: Ecto.Adapters.ClickHouse.DDL
-
 end
-

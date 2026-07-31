@@ -93,7 +93,15 @@ defmodule ChDriver.Connection do
 
     case :gen_tcp.connect(hostname, port, tcp_opts, connect_timeout) do
       {:ok, socket} ->
-        do_handshake(socket, database, username, password, recv_timeout, max_buffer_size, compression)
+        do_handshake(
+          socket,
+          database,
+          username,
+          password,
+          recv_timeout,
+          max_buffer_size,
+          compression
+        )
 
       {:error, reason} ->
         {:error, reason}
@@ -113,7 +121,15 @@ defmodule ChDriver.Connection do
   # success), so nothing else would ever close it otherwise, leaking an open
   # :gen_tcp socket on every partial-handshake failure (bad credentials,
   # unexpected/garbled ServerHello, a mid-handshake network drop, etc).
-  defp do_handshake(socket, database, username, password, recv_timeout, max_buffer_size, compression) do
+  defp do_handshake(
+         socket,
+         database,
+         username,
+         password,
+         recv_timeout,
+         max_buffer_size,
+         compression
+       ) do
     hello = Protocol.client_hello(database, username, password)
 
     with :ok <- :gen_tcp.send(socket, Protocol.encode_client_hello(hello)),
@@ -300,6 +316,254 @@ defmodule ChDriver.Connection do
 
   defp accumulate_data(acc, _columns, rows) do
     %{acc | rows: Enum.reverse(rows, acc.rows)}
+  end
+
+  @doc """
+  Starts `query_string` the same way `query/3` does (Query packet + empty
+  Data packet), but instead of looping internally to `:end_of_stream` and
+  accumulating every row into memory, stops after receiving just one
+  block's worth of response -- ClickHouse's own "header" block (0 rows,
+  but with the result's column names/types) -- and returns a small,
+  stateful "stream" map that `stream_fetch/2` resumes from on demand.
+
+  This is what `ChDriver.DBConnection.handle_declare/4` calls: the
+  returned map (`%{columns:, buffer:, done:, recv_timeout:,
+  max_buffer_size:, compression:, pending:}`) is exactly the "cursor"
+  state that needs to persist across `handle_fetch/4` calls -- the
+  socket itself is `conn.socket` (unchanged, owned by the connection the
+  whole time), `buffer` is the unconsumed tail of whatever was already
+  read off it, and `pending` holds the header block's own rows (almost
+  always `[]`, but a tiny result can in principle arrive combined with
+  the header in a single block -- see the moduledoc note on
+  `receive_stream_block/6` -- so this is never silently dropped) for the
+  first `stream_fetch/2` call to hand back without doing any socket I/O.
+
+  Returns `{:ok, stream}` or `{:error, reason}` (a socket error or a
+  `%ChDriver.Error{}`, exactly like `query/3`).
+  """
+  @spec start_stream(map, binary, keyword) :: {:ok, map} | {:error, term}
+  def start_stream(%{socket: socket} = conn, query_string, opts \\ []) do
+    recv_timeout = Keyword.get(opts, :recv_timeout, @default_recv_timeout)
+    max_buffer_size = Keyword.get(opts, :max_buffer_size, @default_max_buffer_size)
+    compression = Keyword.get(opts, :compression, Map.get(conn, :compression, :none))
+
+    packet = [
+      Protocol.encode_query(query_string, Keyword.put(opts, :compression, compression)),
+      Protocol.encode_empty_data_packet(compression)
+    ]
+
+    with :ok <- :gen_tcp.send(socket, packet) do
+      socket
+      |> receive_first_nonempty_block(<<>>, recv_timeout, max_buffer_size, compression, nil)
+      |> build_stream(recv_timeout, max_buffer_size, compression)
+      |> put_statement(query_string)
+    end
+  end
+
+  # ClickHouse always sends an empty "header" Data block (0 rows, columns
+  # only) before any block with actual rows (see `accumulate_data/3`
+  # above) -- skip it (and, defensively, any further 0-row `:cont` block,
+  # in case a server/version ever sends more than one) so `start_stream/3`
+  # never surfaces a content-free block as if it were real stream data.
+  # A `:cont` block that already carries rows (or `:halt`, meaning the
+  # query genuinely returned nothing) is returned as-is and stashed as
+  # `stream.pending` by `build_stream/4` for the first `stream_fetch/2`
+  # call to hand back without any further socket I/O.
+  defp receive_first_nonempty_block(
+         socket,
+         buffer,
+         timeout,
+         max_buffer_size,
+         compression,
+         columns
+       ) do
+    case receive_stream_block(socket, buffer, timeout, max_buffer_size, compression, columns) do
+      {:cont, %{rows: []}, rest, columns} ->
+        receive_first_nonempty_block(socket, rest, timeout, max_buffer_size, compression, columns)
+
+      other ->
+        other
+    end
+  end
+
+  defp build_stream({:cont, block, buffer, columns}, recv_timeout, max_buffer_size, compression) do
+    {:ok,
+     %{
+       columns: columns,
+       buffer: buffer,
+       recv_timeout: recv_timeout,
+       max_buffer_size: max_buffer_size,
+       compression: compression,
+       pending: {:cont, block.rows},
+       done: false
+     }}
+  end
+
+  defp build_stream({:halt, block, buffer, columns}, recv_timeout, max_buffer_size, compression) do
+    {:ok,
+     %{
+       columns: columns,
+       buffer: buffer,
+       recv_timeout: recv_timeout,
+       max_buffer_size: max_buffer_size,
+       compression: compression,
+       pending: {:halt, block.rows},
+       done: true
+     }}
+  end
+
+  defp build_stream({:error, reason}, _recv_timeout, _max_buffer_size, _compression) do
+    {:error, reason}
+  end
+
+  @doc """
+  Resumes a stream previously started by `start_stream/3` (or a prior
+  call to this function), returning exactly one Data block's worth of
+  rows -- the natural unit the wire protocol already delivers, so there's
+  no artificial row-count-based rebatching here.
+
+  If `stream.pending` is set (the header block's own rows, stashed by
+  `start_stream/3` and not yet handed back), returns that directly
+  without touching the socket at all. Otherwise resumes the receive loop
+  from `stream.buffer` on `socket`.
+
+  Returns `{:cont, %{columns:, rows:}, stream}` while more blocks remain,
+  `{:halt, %{columns:, rows:}, stream}` once `:end_of_stream` is reached
+  (`stream.done` is `true` from then on, and every further call returns
+  the same empty `:halt` immediately), or `{:error, reason}`.
+  """
+  @spec stream_fetch(:gen_tcp.socket(), map) :: {:cont | :halt, map, map} | {:error, term}
+  def stream_fetch(_socket, %{pending: {status, rows}} = stream) do
+    block = %{columns: stream.columns, rows: rows}
+    {status, block, %{stream | pending: nil, done: status == :halt}}
+  end
+
+  def stream_fetch(_socket, %{done: true} = stream) do
+    {:halt, %{columns: stream.columns, rows: []}, stream}
+  end
+
+  def stream_fetch(socket, stream) do
+    %{
+      buffer: buffer,
+      recv_timeout: timeout,
+      max_buffer_size: max_buffer_size,
+      compression: compression,
+      columns: columns
+    } = stream
+
+    case receive_stream_block(socket, buffer, timeout, max_buffer_size, compression, columns) do
+      {:cont, block, rest, columns} ->
+        {:cont, block, %{stream | buffer: rest, columns: columns}}
+
+      {:halt, block, rest, columns} ->
+        {:halt, block, %{stream | buffer: rest, columns: columns, done: true}}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  @doc """
+  Cleans up a stream previously started by `start_stream/3`, for
+  `ChDriver.DBConnection.handle_deallocate/4`.
+
+  If the stream already reached `:end_of_stream` (`stream.done` is
+  `true` -- the caller consumed every block via `stream_fetch/2`), there
+  is nothing left in flight and this is a no-op returning `:ok`
+  immediately.
+
+  Otherwise (the caller stopped early, e.g. `Enum.take/2` on a partially
+  consumed stream) there is no server-side portal/cursor to close the
+  way Postgres has -- but ClickHouse's native protocol does have a
+  Cancel packet (Client packet type 3): this sends it, then keeps
+  draining and discarding blocks off the same socket/buffer until
+  `:end_of_stream` (blocks already in flight before the server notices
+  the cancellation can still arrive), so the connection is left in a
+  clean, byte-position-correct state for the next query instead of
+  leaking unread bytes that would desync the very next request sent on
+  this socket.
+
+  Returns `:ok` or `{:error, reason}`.
+  """
+  @spec cancel_stream(:gen_tcp.socket(), map) :: :ok | {:error, term}
+  def cancel_stream(_socket, %{done: true}), do: :ok
+
+  def cancel_stream(socket, %{
+        buffer: buffer,
+        recv_timeout: timeout,
+        max_buffer_size: max_buffer_size,
+        compression: compression,
+        columns: columns
+      }) do
+    with :ok <- :gen_tcp.send(socket, Protocol.encode_cancel()) do
+      drain_stream(socket, buffer, timeout, max_buffer_size, compression, columns)
+    end
+  end
+
+  defp drain_stream(socket, buffer, timeout, max_buffer_size, compression, columns) do
+    case receive_stream_block(socket, buffer, timeout, max_buffer_size, compression, columns) do
+      {:cont, _block, rest, columns} ->
+        drain_stream(socket, rest, timeout, max_buffer_size, compression, columns)
+
+      {:halt, _block, _rest, _columns} ->
+        :ok
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  # The pausable sibling of `receive_query_result/6` above: rather than
+  # looping until `:end_of_stream` and accumulating every Data block seen
+  # into `acc`, this returns as soon as it has decoded exactly one
+  # Data/end-of-stream/exception packet, handing back enough state
+  # (`rest`, the unconsumed buffer tail, and `columns`, the
+  # first-non-nil-seen column list, mirroring `accumulate_data/3`'s own
+  # "keep the first non-nil columns" rule) for the caller to resume from
+  # later. `columns` starts as `nil` (from `start_stream/3`) and is
+  # threaded through unchanged by every subsequent `stream_fetch/2` call,
+  # so a Data block's own possibly-empty column list is never mistaken
+  # for "no columns" once real ones are known.
+  defp receive_stream_block(socket, buffer, timeout, max_buffer_size, compression, columns) do
+    case Protocol.decode_packet(buffer, compression) do
+      {:ok, {:data, %{columns: block_columns, rows: rows}}, rest} ->
+        resolved = columns || block_columns
+        {:cont, %{columns: resolved, rows: rows}, rest, resolved}
+
+      {:ok, {:profile_events, _block}, rest} ->
+        receive_stream_block(socket, rest, timeout, max_buffer_size, compression, columns)
+
+      {:ok, {:progress, _progress}, rest} ->
+        receive_stream_block(socket, rest, timeout, max_buffer_size, compression, columns)
+
+      {:ok, {:profile_info, _profile_info}, rest} ->
+        receive_stream_block(socket, rest, timeout, max_buffer_size, compression, columns)
+
+      {:ok, :pong, rest} ->
+        receive_stream_block(socket, rest, timeout, max_buffer_size, compression, columns)
+
+      {:ok, :end_of_stream, rest} ->
+        {:halt, %{columns: columns || [], rows: []}, rest, columns}
+
+      {:ok, {:exception, error}, _rest} ->
+        {:error, error}
+
+      {:incomplete, _} ->
+        with :ok <- check_buffer_size(buffer, max_buffer_size),
+             {:ok, more} <- :gen_tcp.recv(socket, 0, timeout) do
+          receive_stream_block(
+            socket,
+            buffer <> more,
+            timeout,
+            max_buffer_size,
+            compression,
+            columns
+          )
+        end
+
+      {:error, reason} ->
+        {:error, reason}
+    end
   end
 
   @doc """

@@ -20,6 +20,7 @@ defmodule ChDriver.Protocol.Messages do
   @packet_hello 0
   @client_query 1
   @client_data 2
+  @client_cancel 3
   @client_ping 4
 
   # Revision this driver advertises to the server. ClickHouse gates several
@@ -365,6 +366,18 @@ defmodule ChDriver.Protocol.Messages do
   """
   @spec encode_ping() :: iodata
   def encode_ping, do: Varint.encode(@client_ping)
+
+  @doc """
+  Encodes a Cancel packet (Client packet type 3). No body -- just the
+  packet-type varint. Tells the server to stop processing the
+  currently-running query on this connection; the client must keep
+  reading (Data/Progress/ProfileEvents blocks already in flight before
+  the server notices the cancellation may still arrive) until it
+  observes `:end_of_stream` -- see `ChDriver.Connection.cancel_stream/2`,
+  the only caller, which does exactly that drain after sending this.
+  """
+  @spec encode_cancel() :: iodata
+  def encode_cancel, do: Varint.encode(@client_cancel)
 
   # Exception (Server packet type 2): Int32LE code, varint-length-prefixed
   # name ("DB::Exception"/"DB::NetException"), varint-length-prefixed

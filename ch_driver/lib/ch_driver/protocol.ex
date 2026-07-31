@@ -163,6 +163,14 @@ defmodule ChDriver.Protocol do
   def encode_ping, do: Messages.encode_ping()
 
   @doc """
+  Encodes a Cancel packet (Client packet type 3). See
+  `ChDriver.Protocol.Messages.encode_cancel/0` for the wire layout and
+  why the caller must keep draining the socket after sending this.
+  """
+  @spec encode_cancel() :: iodata
+  def encode_cancel, do: Messages.encode_cancel()
+
+  @doc """
   Decodes a single server response packet from the front of `binary`.
 
   Returns `{:ok, packet, rest}`, `{:incomplete, binary}` if more bytes are

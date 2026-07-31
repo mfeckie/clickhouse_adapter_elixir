@@ -79,4 +79,48 @@ defmodule ChDriver do
       {:error, error} -> raise error
     end
   end
+
+  @doc """
+  Builds a `%ChDriver.Stream{}` that lazily executes `statement` and
+  yields its rows one wire-protocol Data block at a time (each element is
+  a `%ChDriver.Result{}` for that block, honoring `opts[:decode_mapper]`
+  exactly like `query/2,3,4`), instead of buffering the whole result in
+  memory the way `query/2,3,4` does.
+
+  `conn` must already be a checked-out `%DBConnection{}` -- exactly what
+  `DBConnection.stream/4` itself requires (its `resource/5` helper only
+  matches an already-checked-out struct) -- so `stream/2,3,4` has to be
+  called from inside `DBConnection.run/3` or `DBConnection.transaction/3`,
+  not directly against a pool pid:
+
+      {:ok, result} =
+        DBConnection.run(pool, fn conn ->
+          conn
+          |> ChDriver.stream("SELECT number FROM system.numbers LIMIT 200000")
+          |> Enum.take(5)
+        end)
+
+  See `ChDriver.Stream`'s moduledoc and `ChDriver.DBConnection`'s cursor
+  section for how the underlying `handle_declare/4`/`handle_fetch/4`/
+  `handle_deallocate/4` cycle keeps this genuinely incremental (each
+  block is only read off the socket when the consumer asks for it) rather
+  than pre-buffering everything and merely presenting it lazily.
+  """
+  @spec stream(DBConnection.conn(), binary, list, keyword) :: ChDriver.Stream.t()
+  def stream(%DBConnection{} = conn, statement, params \\ [], opts \\ []) do
+    # `DBConnection.declare/4` (which `DBConnection.reduce/3` calls for a
+    # plain `%DBConnection.Stream{}`, see `ChDriver.Stream`'s moduledoc)
+    # only takes the "parse this fresh query first" path when
+    # `DBConnection.Query.encode/3` raises `DBConnection.EncodeError` --
+    # `ChDriver.Query`'s `encode/3` raises a plain `ArgumentError` for an
+    # unparsed query instead (matching `Postgrex.Query`'s own behavior,
+    # see its moduledoc), so a never-parsed struct would blow up there
+    # instead of being auto-prepared. `parse/2` is a pure, local,
+    # quote-aware lex with no socket I/O (see `ChDriver.Query.
+    # lex_placeholders/1`), so doing it here upfront -- exactly like
+    # `query/2,3,4` effectively does via `DBConnection.prepare_execute/4`
+    # -- costs nothing extra and sidesteps the mismatch entirely.
+    query = DBConnection.Query.parse(%Query{statement: statement}, opts)
+    %ChDriver.Stream{conn: conn, query: query, params: params, opts: opts}
+  end
 end
