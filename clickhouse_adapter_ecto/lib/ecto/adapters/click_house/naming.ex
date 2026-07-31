@@ -1,15 +1,13 @@
 defmodule Ecto.Adapters.ClickHouse.Naming do
   @moduledoc """
-  Quoting -- double quotes are
-  accepted for identifiers (`SELECT "id" FROM "events"`); backticks work
-  too, but double quotes are the ANSI-standard choice and match what the
-  rest of the Ecto ecosystem (Postgres) expects, so that's what's used
-  here. Single quotes remain reserved for string literals.
+  Identifier quoting and query source-naming helpers shared by
+  `Ecto.Adapters.ClickHouse.DDL`, `Ecto.Adapters.ClickHouse.QueryBuilder`,
+  and `Ecto.Adapters.ClickHouse.Expression`.
 
-  `quote_name/1` and `quote_table/2` are exposed (rather than kept `defp`)
-  so `Ecto.Adapters.ClickHouse.DDL`'s DDL generation, `Ecto.Adapters.ClickHouse.QueryBuilder`,
-  and `Ecto.Adapters.ClickHouse.Expression` can all reuse the exact same
-  identifier-quoting logic, instead of duplicating it.
+  Identifiers are double-quoted (`SELECT "id" FROM "events"`) -- the
+  ANSI-standard choice, and consistent with what Postgres does elsewhere
+  in the Ecto ecosystem. Backticks work too, but aren't used here. String
+  literals use single quotes, as usual.
   """
 
   ## Query generation (SELECT) naming helpers

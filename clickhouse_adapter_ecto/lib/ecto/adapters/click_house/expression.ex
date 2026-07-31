@@ -1,11 +1,31 @@
 defmodule Ecto.Adapters.ClickHouse.Expression do
   @moduledoc """
-  Clause and expression renderers used by `Ecto.Adapters.ClickHouse.QueryBuilder`
-  to build SELECT statements: `SELECT`, `FROM`, `WHERE`, `ORDER BY`,
-  `LIMIT`/`OFFSET`, boolean composition, and the `expr/3` Ecto expression
-  renderer (with its many clauses covering literals, functions, operators,
-  and fragments). This is the file that grows every time a new Ecto
-  fragment or operator is supported, so it stays focused purely on that.
+  Clause and expression rendering for `SELECT` statements: `SELECT`,
+  `FROM`, `JOIN`, `WHERE`, `GROUP BY`, `HAVING`, `ORDER BY`,
+  `LIMIT`/`OFFSET`, and `expr/3`, the general Ecto expression renderer
+  (literals, functions, operators, fragments).
+
+  ## Joins
+
+  Only `:inner` and `:left` joins with an explicit `ON` condition are
+  supported -- the shape `join/4,5` and association-based
+  `join: assoc(...)` queries produce. `:right`/`:full`/`:cross` quals,
+  ClickHouse-specific ASOF/semi/anti/lateral joins, and `hints:` all raise
+  rather than being silently mishandled.
+
+  Unlike Postgres/MySQL, a plain ClickHouse `LEFT JOIN` fills an unmatched
+  right side with each column's type default (`""` for `String`, `0` for
+  numeric types), not SQL `NULL`, unless the server has
+  `join_use_nulls = 1` set. Code relying on `is_nil/1` against a
+  left-joined column should account for this.
+
+  ## What's not supported
+
+  `DISTINCT`, selecting an entire source without an explicit field list,
+  window functions, set operations (`union`, etc), `filter/2`
+  (`Ecto.Query.API` documents it as Postgres-only), and any `ORDER BY`
+  direction other than `:asc`/`:desc` all raise a clear
+  `Ecto.QueryError` rather than being silently mishandled.
   """
 
   alias Ecto.Query.{BooleanExpr, ByExpr, JoinExpr, QueryExpr}

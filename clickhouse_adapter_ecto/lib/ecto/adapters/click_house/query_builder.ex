@@ -2,10 +2,27 @@ defmodule Ecto.Adapters.ClickHouse.QueryBuilder do
   @moduledoc """
   Statement generators for `Ecto.Adapters.SQL.Connection`: `all/2`,
   `update_all/2`, `delete_all/1`, `insert/8`, `update/5`, `delete/5`, and
-  `explain_query/4`. These change for entirely different reasons than the
-  expression/clause rendering in `Ecto.Adapters.ClickHouse.Expression` --
-  e.g. adding an `expr/3` clause for a new Ecto fragment has nothing to do
-  with `insert/8`'s on-conflict handling -- so they're kept apart.
+  `explain_query/4`.
+
+  `update_all/2`, `update/5`, and `delete/5` always raise: ClickHouse
+  mutates existing rows asynchronously via `ALTER TABLE ...
+  UPDATE`/`DELETE`, not a synchronous SQL statement, so
+  `Repo.update_all/2`, `Repo.update!/1`, and `Repo.delete!/1` aren't
+  supported. Issue an `ALTER TABLE` mutation directly via a raw query
+  instead.
+
+  `delete_all/1` is supported, but narrowly: it compiles to
+  `ALTER TABLE ... DELETE WHERE ... SETTINGS mutations_sync = 1`, which
+  only accepts a single source table and no joins/`LIMIT`/`OFFSET` --
+  queries outside that shape raise. `mutations_sync = 1` makes the call
+  block until the mutation is actually applied, which is what lets
+  `Repo.delete_all/2` behave synchronously (useful in a migration's
+  `down/0`) at the cost of not scaling to large bulk deletes -- prefer a
+  raw, unsynchronized `ALTER TABLE ... DELETE` for those.
+
+  `insert/8` doesn't support `:on_conflict` (no native upsert -- use
+  `ReplacingMergeTree`/`CollapsingMergeTree` engines instead) or
+  `:returning` (no `RETURNING` clause).
   """
 
   alias Ecto.Adapters.ClickHouse.{Connection, Expression, Naming}

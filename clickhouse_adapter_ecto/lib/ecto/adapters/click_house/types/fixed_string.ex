@@ -2,34 +2,29 @@ defmodule Ecto.Adapters.ClickHouse.Types.FixedString do
   @moduledoc """
   An `Ecto.ParameterizedType` for ClickHouse's `FixedString(N)` column type.
 
-  Use it in a schema the same way as any other parameterized type:
+  Use it in a schema like any other parameterized type:
 
       schema "widgets" do
         field :code, Ecto.Adapters.ClickHouse.Types.FixedString, size: 16
       end
 
   `size` (a positive integer, the `N` in `FixedString(N)`) is required and
-  validated at `init/1` time -- i.e. as soon as the schema module compiles,
-  not the first time a value is cast.
+  validated when the schema module compiles, not on the first cast.
 
   ## Value semantics
 
-  `FixedString(N)` always occupies exactly `N` bytes on the wire: ClickHouse
-  zero-pads a shorter value up to `N` on `INSERT` and rejects (raises
-  `DB::Exception` code 131, "Too large string for FixedString column") a
-  value longer than `N` bytes. `SELECT` returns those `N` bytes verbatim,
-  padding included -- ClickHouse does not strip it back out.
+  `FixedString(N)` always occupies exactly `N` bytes on the wire.
+  ClickHouse zero-pads a shorter value up to `N` on insert, and rejects a
+  value longer than `N` bytes with `DB::Exception` code 131 ("Too large
+  string for FixedString column"). A `SELECT` returns those `N` bytes
+  verbatim, padding included -- ClickHouse doesn't strip it back out, and
+  neither does this type.
 
-  This type mirrors that on both sides instead of silently reinterpreting
-  it: `cast/2` rejects (with a changeset-friendly `{:error, ...}`) a binary
-  longer than `size`, but does not pad a shorter one itself -- ClickHouse's
-  own `INSERT` already does that, so padding here too would just be
-  duplicated, easy-to-drift logic. `load/3` returns the padded bytes exactly
-  as decoded (matching `ChDriver.Protocol.NativeBlock`'s own decision to
-  decode `FixedString(N)` to the raw `N`-byte binary rather than trimming
-  it) -- trimming trailing `0x00` bytes here would silently discard real
-  wire content for any caller intentionally storing binary data whose
-  natural encoding ends in zero bytes.
+  `cast/2` rejects a binary longer than `size`, but doesn't pad a shorter
+  one itself (ClickHouse's own `INSERT` already does that). `load/3`
+  returns the padded bytes exactly as decoded -- if you store binary data
+  whose natural encoding ends in zero bytes, those bytes are preserved
+  rather than trimmed.
   """
 
   use Ecto.ParameterizedType

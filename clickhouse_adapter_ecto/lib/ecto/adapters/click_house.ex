@@ -1,63 +1,90 @@
 defmodule Ecto.Adapters.ClickHouse do
   @moduledoc """
-  A minimal `Ecto.Adapters.SQL`-based adapter for ClickHouse, backed by
-  `ChDriver` (a native-protocol `DBConnection` driver).
+  An `Ecto.Adapters.SQL`-based adapter for ClickHouse, talking to it over
+  its native TCP protocol via `ChDriver`.
 
-  This module wires `Ecto.Adapters.SQL` (which provides `Ecto.Adapter`,
-  `Ecto.Adapter.Queryable`, `Ecto.Adapter.Schema`, and
-  `Ecto.Adapter.Transaction` for free, delegating SQL generation to
-  `Ecto.Adapters.ClickHouse.Connection`) up to `ChDriver`.
+  ## Usage
 
-  ## Scope of this phase
+  Point a repo's `adapter` at this module and configure it like any other
+  `Ecto.Repo`:
 
-  This adapter currently targets basic `SELECT`/`INSERT` round-trips through
-  a real `Ecto.Repo` -- see `Ecto.Adapters.ClickHouse.Connection`'s
-  moduledoc for exactly which query shapes are supported.
+      defmodule MyApp.Repo do
+        use Ecto.Repo, otp_app: :my_app, adapter: Ecto.Adapters.ClickHouse
+      end
 
-  ## Storage (`mix ecto.create` / `mix ecto.drop`)
+      config :my_app, MyApp.Repo,
+        hostname: "localhost",
+        port: 9000,
+        database: "default",
+        username: "default",
+        password: ""
 
-  `Ecto.Adapter.Storage` is implemented: `storage_up/1` and `storage_down/1`
-  issue a plain `CREATE DATABASE`/`DROP DATABASE` over a short-lived
-  maintenance connection (see `run_storage_query/2`), and `storage_status/1`
-  checks `system.databases`. There is no ClickHouse equivalent of "does this
-  role have CREATEDB" to worry about, and no encoding/collation options are
-  supported (ClickHouse databases don't have either).
+  ## Migrations
 
-  ## Migrations (`mix ecto.migrate`)
+  `mix ecto.gen.migration` and `mix ecto.migrate` work as usual.
+  `create table(...)` and `drop table(...)` with plain `:add` columns are
+  supported; ClickHouse has no transactional DDL, so
+  `supports_ddl_transaction?/0` returns `false`. See
+  `Ecto.Adapters.ClickHouse.DDL` for the full picture of what's supported,
+  including `:alter`, indexes, and constraints (none of which are, yet).
 
-  `Ecto.Adapter.Migration` is implemented well enough for straightforward
-  migrations to run: `supports_ddl_transaction?/0` returns `false`
-  (ClickHouse has no transactional DDL), and `lock_for_migrations/3` is a
-  **deliberate no-op** that just calls the given function directly -- see
-  its doc below for why. `Ecto.Adapters.ClickHouse.Connection`'s `execute_ddl/1`
-  turns `create table(...)`/`drop table(...)` into `CREATE TABLE`/`DROP
-  TABLE` (see that module's `## DDL` section for exactly what's supported
-  and how the `ENGINE`/`ORDER BY` clause is chosen), which is what lets
-  `Ecto.Migrator` create and populate `schema_migrations` automatically.
+  ClickHouse's `ORDER BY`/`PRIMARY KEY` is not a Postgres-style primary
+  key -- it's a sort/skip index for scans, never enforced as unique, and
+  ClickHouse has no autoincrement. Ecto's default
+  `add :id, :bigserial, primary_key: true` still produces valid DDL, but
+  leaving `:id` out of an insert (the usual "let the database generate it"
+  pattern) silently writes `0` for every row instead of a fresh value.
+  Give tables an explicit id and sort key instead:
 
-  `mix ecto.rollback` / `Ecto.Migrator.run(repo, path, :down, ...)` **is**
-  supported for the common case: a `change/0` migration doing
-  `create table(...)` auto-reverses to `drop table(...)` cleanly (both are
-  synchronous, metadata-only DDL), and the `schema_migrations` bookkeeping
-  row removal that Ecto.Migration.SchemaMigration's `down/4` issues via
-  `Repo.delete_all/2` is handled by
-  `Ecto.Adapters.ClickHouse.Connection`'s `delete_all/1`, which translates it
-  into an `ALTER TABLE ... DELETE WHERE ... SETTINGS mutations_sync = 1`
-  mutation that blocks until the row is actually gone, so the migrator's
-  post-delete state is correct with no polling. See
-  `Connection`'s moduledoc for exactly how narrowly that `delete_all` support
-  is scoped (single table, no joins/LIMIT/OFFSET).
+      create table(:events, primary_key: false, options: "ENGINE = MergeTree ORDER BY id") do
+        add(:id, :uuid, primary_key: true)
+        add(:name, :string)
+        add(:occurred_at, :utc_datetime)
+      end
 
-  Not supported: `:alter` (existing migrations that add/remove/modify
-  columns), indexes, and constraints -- see
-  `Ecto.Adapters.ClickHouse.Connection`'s `## DDL` moduledoc section for the
-  full breakdown of which DDL operations are safe to auto-reverse via
-  `change/0` (create/drop table; add/remove column, once `:alter` support
-  lands) versus which are genuinely unsafe and must be written as explicit
-  `up/0` + `down/0` (column type changes via `MODIFY COLUMN`, `ORDER BY`/
-  partition key changes, and any `UPDATE`/`DELETE`-shaped data mutation).
-  `execute_ddl/1` raises a specific, actionable error if asked to
-  auto-generate DDL for an unsafe `:modify` column-type change.
+  paired with a schema that supplies `:id` itself:
+
+      @primary_key false
+      schema "events" do
+        field(:id, :string)
+        field(:name, :string)
+        field(:occurred_at, :utc_datetime)
+      end
+
+      Repo.insert!(%Event{id: Ecto.UUID.generate(), name: "signup", occurred_at: DateTime.utc_now(:second)})
+
+  The `:id` field is a plain `:string`, not `Ecto.UUID` -- ClickHouse's
+  `UUID` column round-trips as a hyphenated text string, while
+  `Ecto.UUID`'s `dump/1` produces a raw binary ClickHouse rejects.
+  `Ecto.UUID.generate/0` still works fine for generating the value itself.
+
+  ## Querying
+
+      import Ecto.Query
+
+      MyApp.Repo.all(from e in Event, where: e.name == "signup", order_by: e.occurred_at)
+
+  ## What's not supported
+
+    * `Repo.update!/1` and `Repo.delete!/1` -- ClickHouse mutates existing
+      data via the asynchronous `ALTER TABLE ... UPDATE`/`DELETE`
+      statements, not synchronous SQL. Issue those directly as raw queries
+      if you need them.
+    * `:on_conflict` (upserts) and `:returning` on insert -- ClickHouse's
+      `INSERT` has neither. Use `ReplacingMergeTree`/`CollapsingMergeTree`
+      table engines for upsert-like behavior instead.
+    * Real transactions (`Repo.transaction/2`), and by extension
+      `Repo.stream/2` -- ClickHouse's native protocol as used here has no
+      session transaction support. See `Ecto.Adapters.ClickHouse.Connection`'s
+      `stream/4` for a workaround.
+    * Joins, `LIMIT`, and `OFFSET` in `delete_all/2` -- only a plain
+      `WHERE` against a single table.
+    * `:alter` migrations (add/remove/modify column), indexes, and
+      constraints.
+    * `DISTINCT`, window functions, and set operations in queries.
+
+  See `Ecto.Adapters.ClickHouse.Connection`, `.DDL`, and `.Expression` for
+  exactly which query and DDL shapes are supported.
   """
 
   use Ecto.Adapters.SQL, driver: :ch_driver

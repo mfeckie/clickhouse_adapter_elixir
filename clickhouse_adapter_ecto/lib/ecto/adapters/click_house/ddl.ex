@@ -2,343 +2,138 @@ defmodule Ecto.Adapters.ClickHouse.DDL do
   @moduledoc """
   DDL generation for `Ecto.Migration` support.
 
-  Only `CREATE TABLE [IF NOT EXISTS]` (from `Ecto.Migration.Table` + a
+  Only `CREATE TABLE [IF NOT EXISTS]` (from `Ecto.Migration.Table` plus a
   column list of plain `{:add, name, type, opts}` commands) and
-  `DROP TABLE [IF EXISTS]` are implemented -- enough to let
-  Ecto.Migration.SchemaMigration's `ensure_schema_migrations_table!/3`
-  (called internally by `Ecto.Migrator`) create the `schema_migrations`
-  table, and for a migration author's own `create table(...)` /
-  `drop table(...)` to work for simple, single-statement tables.
+  `DROP TABLE [IF EXISTS]` are implemented. That's enough for
+  `Ecto.Migrator` to create and manage the `schema_migrations` table, and
+  for a migration's own `create table(...)`/`drop table(...)` to work for
+  simple, single-statement tables.
 
   `:alter` (adding/removing/modifying columns on an existing table),
-  indexes, and constraints are NOT implemented -- ClickHouse's ALTER TABLE
-  semantics (async mutations, `ADD COLUMN`/`MODIFY COLUMN` quirks per
-  engine) don't map cleanly onto `Ecto.Migration.Table`'s `:alter`
-  subcommands, and ClickHouse has no unique/foreign-key constraints at
-  all. Use a raw SQL string via `execute/1` in a migration for anything
-  beyond a one-shot `CREATE`/`DROP TABLE`.
+  indexes, and constraints are not implemented -- ClickHouse has no
+  unique/foreign-key constraints at all, and its `ALTER TABLE` semantics
+  don't map cleanly onto `Ecto.Migration.Table`'s `:alter` subcommands.
+  Use a raw SQL string via `execute/1` for anything beyond a one-shot
+  `CREATE`/`DROP TABLE`.
 
-  ## Which DDL is safe for `change/0` auto-reversal, and which isn't
+  ## `change/0` auto-reversal
 
-  Ecto's `change/0` migrations rely on `Ecto.Migration`'s built-in
-  reversal (`create table(...)` -> `drop table(...)`, `add :col, :type` ->
-  `remove :col`, etc) to synthesize the `down` direction for you. Whether
-  that's *safe* to auto-generate for ClickHouse specifically depends on
-  whether the underlying operation is synchronous/metadata-only or an
-  asynchronous, potentially-lossy rewrite:
+  Ecto synthesizes a migration's `down` direction from `change/0`. That's
+  only safe for synchronous, metadata-only operations:
 
-    SAFE for `change/0` (synchronous, metadata-only, reverses cleanly):
-      * `create table(...)` / `drop table(...)` -- implemented here.
-      * `add :col, :type` / `remove :col` -- ClickHouse's
-        `ALTER TABLE ... ADD COLUMN` / `DROP COLUMN` are synchronous
-        metadata changes (no data rewrite), same category as `CREATE`/
-        `DROP TABLE`. **Not yet implemented in this adapter** (`:alter` is
-        rejected below) -- conceptually safe to auto-reverse, just not
-        built yet; use raw `execute/1` SQL for both directions until it is.
+    * `create table(...)` / `drop table(...)` -- implemented, safe.
+    * `add :col, :type` / `remove :col` -- conceptually safe (ClickHouse's
+      `ADD COLUMN`/`DROP COLUMN` are synchronous metadata changes), but
+      not yet implemented here (`:alter` is rejected below). Use raw
+      `execute/1` SQL for both directions until it lands.
 
-    UNSAFE -- require explicit `up/0` + `down/0`, never `change/0`:
-      * `ALTER TABLE ... MODIFY ORDER BY` / partition key changes --
-        MergeTree's ORDER BY/PARTITION BY defines the on-disk sort order
-        and physically reorganizes existing parts; there is no generic
-        "undo" (the old physical layout isn't recoverable from the new
-        one), and Ecto has no built-in reversal for this operation anyway.
-      * `ALTER TABLE ... MODIFY COLUMN <type>` (a real type change, not a
-        widening no-op) -- this triggers an asynchronous background
-        mutation that rewrites every existing part; data can be
-        irreversibly truncated/coerced during the rewrite (e.g. String ->
-        Int32 on non-numeric values), so "reversing" it by mutating back
-        to the old type does not restore the original bytes.
-      * Any `UPDATE`/`DELETE`-shaped mutation on existing rows
-        (`ALTER TABLE ... UPDATE/DELETE`, see `update_all/2` and the
-        narrowly-scoped `delete_all/1` below) -- these are async,
-        best-effort mutations over existing data, not metadata changes;
-        there's no automatic inverse.
+  Write explicit `up/0` + `down/0` instead of `change/0` for anything that
+  triggers an asynchronous mutation or rewrites existing data -- there is
+  no safe way to auto-generate the reverse for:
 
-  `execute_ddl/1` raises a specific, actionable `ArgumentError` if handed
-  an `{:alter, %Table{}, subcommands}` tuple that includes a `:modify`
-  subcommand, calling out that it's in the "unsafe" category above and
-  must be written as explicit `up/0`/`down/0` (or raw `execute/1` SQL),
-  rather than falling through to the generic "not implemented" message.
+    * `ALTER TABLE ... MODIFY ORDER BY` / partition key changes.
+    * `ALTER TABLE ... MODIFY COLUMN <type>` (a real type change).
+    * Any `UPDATE`/`DELETE`-shaped mutation on existing rows.
 
-  ## `ORDER BY` / partition key changes after `CREATE TABLE`
+  `execute_ddl/1` raises with an explanation if you try to `:modify` a
+  column's type, rather than falling through to a generic "not
+  implemented" error.
 
-  `ALTER TABLE ... MODIFY ORDER BY new_expr` has no representation in
-  `Ecto.Migration`'s DSL at all (there is no `alter table(...) do modify
-  order_by(...) end` -- Ecto's `:alter` subcommands only cover columns).
-  The only way to issue it is a raw SQL string passed to `execute/1`, and
-  `execute_ddl/1` (this module) passes such strings through verbatim (see
-  the `is_binary/1` clause below) -- so an explicit, intentional
-  `MODIFY ORDER BY` is never blocked. What's guarded against is an
-  *implicit* one: since it's structurally unreachable via `change/0`
-  auto-reversal, a migration author changing a sort key must write it as
-  explicit `up/0` + `down/0`, and the `down/0` cannot actually restore the
-  prior physical layout -- at best it can issue another `MODIFY ORDER BY`
-  back to the old expression, which reorders future merges but does not
-  undo merges that already happened under the new key. Document that
-  caveat in the migration itself; there is nothing this adapter can
-  auto-generate here.
+  ## Things with no migration DSL -- use raw SQL
 
-  ## Data-skipping indices (`ALTER TABLE ... ADD INDEX ... TYPE ...`)
+  A few ClickHouse features have no `Ecto.Migration` equivalent, so this
+  adapter doesn't invent one for them. Use `execute/1` directly, as
+  explicit `up/0` + `down/0` (none of this is auto-reversible):
 
-  `Ecto.Migration.index/3` (`create index(...)`) models a Postgres/MySQL
-  B-tree-shaped index: a column list plus `unique:`/`using:`/`where:`.
-  ClickHouse's data-skipping indices (`minmax`, `set`, `bloom_filter`,
-  `ngrambf_v1`, `tokenbf_v1`, ...) are a different mechanism entirely --
-  an arbitrary expression, a type with its own positional tuning
-  parameters (e.g. `bloom_filter(0.01)`), and a `GRANULARITY n`, used to
-  skip whole granules during a scan rather than to accelerate point
-  lookups. None of `index/3`'s fields map onto that shape, and stuffing
-  `type(params) GRANULARITY n` into `using:` would misrepresent `using:`'s
-  documented meaning (an index method name like `:gin`/`:hash`) for every
-  other adapter that reads it.
+    * **`ORDER BY`/partition key changes** --
+      `ALTER TABLE ... MODIFY ORDER BY new_expr`. Note that `down/0` can't
+      actually restore the old physical layout; at best it can issue
+      another `MODIFY ORDER BY` back to the old expression, which affects
+      future merges but not ones that already happened under the new key.
 
-  This adapter does not introduce a ClickHouse-specific
-  migration DSL command for these. `execute_ddl/1` only recognizes the
-  handful of `Ecto.Migration.Command` shapes documented above; a
-  `{:create, %Index{}}` (from `create index(...)`) falls through to the
-  generic clause at the bottom of this section, which raises and points
-  at `execute/1`. Add and drop data-skipping indices with raw SQL:
+    * **Data-skipping indices** (`minmax`, `set`, `bloom_filter`,
+      `ngrambf_v1`, `tokenbf_v1`, ...):
 
-      execute("ALTER TABLE events ADD INDEX amount_minmax_idx amount TYPE minmax GRANULARITY 4")
-      execute("ALTER TABLE events DROP INDEX amount_minmax_idx")
+          execute("ALTER TABLE events ADD INDEX amount_minmax_idx amount TYPE minmax GRANULARITY 4")
+          execute("ALTER TABLE events DROP INDEX amount_minmax_idx")
 
-  Adding an index is metadata-only and applies to parts written from then
-  on; existing parts are only covered once `ALTER TABLE ... MATERIALIZE
-  INDEX name` (or the next merge) rebuilds them -- run `MATERIALIZE INDEX`
-  explicitly in the same migration if the index needs to cover existing
-  data immediately. `change/0` cannot auto-reverse either statement (it
-  doesn't know either shape), so write these as explicit `up/0` + `down/0`
-  using `execute/1` for both directions.
+      Adding an index is metadata-only and only covers parts written
+      afterward. Run `ALTER TABLE ... MATERIALIZE INDEX name` in the same
+      migration if it needs to cover existing data immediately.
 
-  ## Projections (`ALTER TABLE ... ADD PROJECTION`)
+    * **Projections** (`ALTER TABLE ... ADD PROJECTION`) -- out of scope
+      entirely; not supported through any mechanism here besides raw SQL.
 
-  Out of scope for this adapter's migration support. A projection defines
-  an alternate physical layout (its own sort order and/or aggregation) of
-  the same table data, materialized and kept in sync by ClickHouse in the
-  background -- closer to a materialized view bolted onto the table than
-  to an index. It doesn't share data-skipping indices' comparatively
-  simple `ADD INDEX name expr TYPE type(params) GRANULARITY n` grammar
-  (`ADD PROJECTION` takes an arbitrary `SELECT`-shaped body), and nothing
-  about it is trivial enough to justify adapter-level support before a
-  concrete use case demands it. Use raw SQL via `execute/1` if needed.
+    * **Kafka-engine ingestion pipelines** (source table + target table +
+      materialized view):
 
-  ## Kafka-engine tables and materialized views (streaming ingestion)
+          execute(\"\"\"
+          CREATE TABLE events (id UInt64, payload String)
+          ENGINE = MergeTree ORDER BY id
+          \"\"\")
 
-  ClickHouse's standard Kafka ingestion pipeline is three separate
-  pieces wired together, none of which fit `Ecto.Migration.Table`'s
-  column-list DSL:
+          execute(\"\"\"
+          CREATE TABLE events_queue (id UInt64, payload String)
+          ENGINE = Kafka
+          SETTINGS kafka_broker_list = 'kafka:9092',
+                   kafka_topic_list = 'events',
+                   kafka_group_name = 'events_consumer',
+                   kafka_format = 'JSONEachRow'
+          \"\"\")
 
-    1. A target table (an ordinary MergeTree-family table) -- already
-       fully supported by `create table(...)` above.
-    2. A `Kafka`-engine source table (`CREATE TABLE ... ENGINE = Kafka
-       SETTINGS kafka_broker_list = ..., kafka_topic_list = ...,
-       kafka_group_name = ..., kafka_format = ...`), whose "columns" are
-       the parsed message fields plus virtual columns (`_topic`,
-       `_partition`, `_offset`, `_timestamp`, `_headers.name`/
-       `_headers.value`) that ClickHouse injects and that no
-       `Ecto.Migration.Table` column list could express anyway.
-    3. A materialized view (`CREATE MATERIALIZED VIEW mv_name TO
-       target_table AS SELECT ... FROM kafka_table`) -- semantically a
-       standing INSERT trigger that fires once per Kafka poll batch, not
-       an on-demand-refreshed view.
+          execute(\"\"\"
+          CREATE MATERIALIZED VIEW events_mv TO events AS
+          SELECT id, payload FROM events_queue
+          \"\"\")
 
-  This adapter does not add a dedicated migration DSL for any of the
-  three. `execute_ddl/1`'s `is_binary/1` clause already passes raw SQL
-  strings through verbatim, which is the same mechanism this module
-  already relies on for `MODIFY ORDER BY`, data-skipping indices, and
-  projections above -- Kafka table DDL and a view's `AS SELECT ...`
-  body are no less arbitrary than those, so introducing adapter-level
-  sugar here would just be a second, narrower way to spell `execute/1`
-  with none of its generality. Write all three pieces as raw SQL in a
-  migration's `up/0`:
+      Only the explicit `... TO target_table AS SELECT ...` view form is
+      supported; the implicit-target-table form
+      (`ENGINE = ... AS SELECT ...`) creates a hidden backing table with a
+      mangled name `down/0` can't address, so avoid it here. Create in
+      this order: target table, Kafka source table, materialized view.
+      Tear down in reverse: view, then Kafka table, then target table --
+      dropping the target table while the view is still live leaves
+      ingestion silently stalled with no error surfaced anywhere.
 
-      execute(\"\"\"
-      CREATE TABLE events (id UInt64, payload String)
-      ENGINE = MergeTree ORDER BY id
-      \"\"\")
+  ## ClickHouse-specific column types
 
-      execute(\"\"\"
-      CREATE TABLE events_queue (id UInt64, payload String)
-      ENGINE = Kafka
-      SETTINGS kafka_broker_list = 'kafka:9092',
-               kafka_topic_list = 'events',
-               kafka_group_name = 'events_consumer',
-               kafka_format = 'JSONEachRow'
-      \"\"\")
-
-      execute(\"\"\"
-      CREATE MATERIALIZED VIEW events_mv TO events AS
-      SELECT id, payload FROM events_queue
-      \"\"\")
-
-  Only the explicit `CREATE MATERIALIZED VIEW ... TO target_table AS
-  SELECT ...` form is supported/documented; the implicit-target-table
-  form (`CREATE MATERIALIZED VIEW ... ENGINE = ... AS SELECT ...`,
-  where ClickHouse creates and owns a hidden backing table) is out of
-  scope. The hidden table has no name a migration's `down/0` can address
-  directly (ClickHouse mangles it, e.g. `.inner.<uuid>`), which turns a
-  clean, explicit teardown into guesswork; requiring `TO target_table`
-  keeps every piece a migration creates addressable by the name that
-  migration chose.
-
-  None of this is safely auto-reversible, so write `up/0` + `down/0`
-  explicitly -- never `change/0`. The three pieces must be created and
-  torn down in specific orders:
-
-    Creation order (`up/0`): target table, then the Kafka source table,
-    then the materialized view. Only the Kafka table is a hard
-    requirement before the view -- `CREATE MATERIALIZED VIEW ... AS
-    SELECT ... FROM kafka_table` resolves and validates the `FROM`
-    table's columns immediately (`CREATE TABLE ... AS SELECT FROM
-    <nonexistent>` fails with `UNKNOWN_TABLE`), while the `TO
-    target_table` name is not validated until the first insert.
-    Creating the target table first anyway keeps a consistent,
-    unsurprising order and means the view is never live before
-    somewhere to write actually exists.
-
-    Teardown order (`down/0`): materialized view, then the Kafka source
-    table, then the target table -- the reverse of creation, and not
-    interchangeable. `DROP TABLE` on the Kafka source table stops its
-    background consumer immediately and cleanly (the row in
-    `system.kafka_consumers` disappears, no entry lingers in
-    `kafka-consumer-groups.sh --list`) regardless of
-    what else references it, so it never orphans a consumer group by
-    itself. The actual hazard is dropping the *target* table while the
-    materialized view and Kafka table are still live: ClickHouse allows
-    the `DROP TABLE` on the target with no error and no dependency
-    check, but the view is left silently pointing at nothing --
-    ingestion stalls with no exception surfaced anywhere (not in
-    `system.kafka_consumers.exceptions.text`, not in the server log).
-    Dropping the view first removes the trigger before either table
-    underneath it goes away, so there is no window where a poll batch
-    can fire into a broken pipeline.
-
-  ## `FixedString(N)`, `LowCardinality(T)`, and `Map(K, V)` in migrations
-
-  All three are ClickHouse-specific column types with no built-in Ecto
-  migration type, so all three ultimately reach `column_type!/1` as the
-  quoted-atom escape hatch below (`add(:col, :"FixedString(16)")`) --
-  `Ecto.Migration.add/3` validates its own `type` argument before this
-  module ever sees it, and that validation unconditionally rejects any
-  `Ecto.Type`/`Ecto.ParameterizedType` module (passing
-  one directly raises "Types defined through Ecto.Type or
-  Ecto.ParameterizedType aren't allowed, use their underlying types
-  instead"), so no amount of adapter-side wiring can make a real
-  parameterized-type module itself acceptable as a migration `add/3`
-  type -- the quoted atom is the only spelling Ecto leaves available.
-
-  `Ecto.Adapters.ClickHouse.Migration.fixed_string/1` and `.low_cardinality/1`
-  build that quoted atom for you, with the parameter validated up front
-  instead of only surfacing as a ClickHouse DDL error at migration time:
+  `FixedString(N)` and `LowCardinality(T)` have no built-in Ecto migration
+  type, so a raw column type reaches `column_type!/1` via the quoted-atom
+  escape hatch (`add(:col, :"FixedString(16)")`) -- `Ecto.Migration.add/3`
+  rejects a real `Ecto.Type`/`Ecto.ParameterizedType` module outright, so
+  the quoted atom is the only spelling available.
+  `Ecto.Adapters.ClickHouse.Migration` provides validated builders instead
+  of hand-typing that string:
 
       add(:code, Ecto.Adapters.ClickHouse.Migration.fixed_string(16))
       add(:status, Ecto.Adapters.ClickHouse.Migration.low_cardinality(:string))
 
-  `FixedString(N)` additionally gets a full `Ecto.ParameterizedType` --
-  `Ecto.Adapters.ClickHouse.Types.FixedString` -- for the schema side,
-  where `add/3`'s restriction above doesn't apply:
+  `FixedString(N)` also has a schema-side `Ecto.ParameterizedType`:
 
       field :code, Ecto.Adapters.ClickHouse.Types.FixedString, size: 16
 
-  `LowCardinality(T)` does not get one, by design: it's transparent to
-  callers (`ChDriver.Protocol.NativeBlock` decodes it to the exact same
-  Elixir value `T` would decode to on its own), so a plain `field
-  :status, :string` (or whatever `T` maps to) already behaves correctly
-  with no dedicated type -- `low_cardinality/1` exists purely to
-  validate and build the migration-side type string. `Map(K, V)` gets
-  neither: it has two independent type parameters (and ClickHouse
-  further restricts which types `K` may be), and no builder here
-  enforces that -- see `Ecto.Adapters.ClickHouse.Migration`'s moduledoc
-  for the full reasoning. Use the raw quoted atom directly for `Map`:
+  `Map(K, V)` has no builder -- use the quoted atom directly:
 
       add(:m, :"Map(String, UInt32)")
 
-  Every table this generates DDL for needs an `ENGINE`. If the migration
-  author passes `options: "ENGINE = ... "` (via `table(:foo, options:
-  "ENGINE = MergeTree ORDER BY id")`) that raw string is used verbatim;
-  otherwise this defaults to `ENGINE = MergeTree ORDER BY (<primary key
-  columns>)` (or `ORDER BY tuple()` if there are none) -- good enough for
-  `schema_migrations` (which Ecto marks `version` as `primary_key: true`)
-  and for quick dev tables, but MergeTree's ordering/partitioning key is a
-  real modeling decision for anything performance-sensitive -- pass
-  `options:` explicitly once that matters.
+  Every table needs an `ENGINE`. Pass one explicitly via `options:` on
+  `table/2` (e.g. `options: "ENGINE = MergeTree ORDER BY id"`); without
+  it, this defaults to `ENGINE = MergeTree ORDER BY (<primary key
+  columns>)` (or `ORDER BY tuple()` with none). That default is fine for
+  `schema_migrations` and quick dev tables, but MergeTree's sort key is a
+  real modeling decision for anything performance-sensitive -- pick it
+  explicitly once that matters.
 
-  ## `ORDER BY`/`PRIMARY KEY` is not a Postgres-style primary key -- read this before your first migration
+  ## `ORDER BY`/`PRIMARY KEY` is not a Postgres primary key
 
-  This is the single biggest footgun for anyone coming from Postgres or
-  MySQL, so it's called out on its own here rather than only implied by
-  the `ENGINE`-defaulting paragraph above. Confirmed empirically against a
-  live ClickHouse server (see
-  `test/integration/primary_key_semantics_test.exs`):
-
-    * **`create table(:things) do add :name, :string end`, with no
-      `primary_key: false`, does NOT raise or silently produce a broken
-      column.** `Ecto.Migration` injects its own default `add :id,
-      :bigserial, primary_key: true` column before this module ever sees
-      the command list, exactly like it would for Postgres. This module's
-      `engine_clause/2` already special-cases any `:add` column carrying
-      `primary_key: true`: it becomes part of `ORDER BY`, `:bigserial`
-      maps to `UInt64`, and the column is never wrapped in `Nullable(...)`
-      (see `column_definition!/1`). The resulting `CREATE TABLE ... (id
-      UInt64, name Nullable(String)) ENGINE = MergeTree ORDER BY (id)`
-      is perfectly valid ClickHouse DDL and the migration succeeds.
-    * **What actually breaks is what happens *after* `CREATE TABLE`, at
-      insert time, and it's silent.** `ORDER BY`/`PRIMARY KEY` in
-      ClickHouse is a sparse sorting/indexing key used to skip granules
-      during a scan -- it is never enforced as unique at insert time,
-      and ClickHouse has no server-side autoincrement for `id` to fall
-      back on the way a Postgres `bigserial` sequence would. This adapter
-      doesn't synthesize autogeneration either (no `:on_conflict`/
-      `:returning` support -- see `Ecto.Adapters.ClickHouse.QueryBuilder`).
-      So a schema using Ecto's default `@primary_key {:id, :id,
-      autogenerate: true}` that omits `:id` from an insert -- the normal
-      Postgres pattern of "let the database generate it" -- simply never
-      sends a value for that column at all. ClickHouse fills it with the
-      column type's default, `0` for `UInt64`, not a fresh unique value.
-      Every row inserted this way lands on `id = 0`: **all of them are
-      accepted with no error** (there is no uniqueness constraint to
-      violate), but they become indistinguishable by "primary key" from
-      one another.
-
-  The correct, documented pattern is `primary_key: false` on `table/2`
-  plus an explicit `id` column supplied by the application (a natural
-  key, `Ecto.UUID.generate/0`, `System.unique_integer/1`, etc.) and an
-  explicit `options:` `ORDER BY`/`ENGINE` once the default heuristic
-  above isn't the right sort key for the table:
-
-      create table(:events, primary_key: false, options: "ENGINE = MergeTree ORDER BY id") do
-        add(:id, :uuid, primary_key: true)
-        add(:name, :string)
-        add(:occurred_at, :utc_datetime)
-      end
-
-  paired with a schema that supplies `:id` itself rather than trusting
-  the adapter/database to autogenerate it:
-
-      @primary_key false
-      schema "events" do
-        field(:id, :string)
-        field(:name, :string)
-        field(:occurred_at, :utc_datetime)
-      end
-
-      Repo.insert!(%Event{id: Ecto.UUID.generate(), name: ..., occurred_at: ...})
-
-  The schema field is a plain `:string`, not `Ecto.UUID`: ClickHouse's
-  `UUID` column round-trips through this adapter as the standard
-  hyphenated text form (see `ChDriver.Protocol.NativeBlock`'s `decode_uuid/1`),
-  while `Ecto.UUID`'s own `dump/1` produces a raw 16-byte binary meant for
-  Postgres-style binary UUID storage -- sent as a query parameter here,
-  ClickHouse rejects it with `Cannot parse uuid`. So `Ecto.UUID.generate/0`
-  is used directly as a plain string, assigned explicitly before insert,
-  with no adapter-side autogeneration involved.
-
-  Whichever id strategy is used, remember ClickHouse
-  will not reject a duplicate: deduplication (if wanted at all) has to be
-  handled either at the application level or via a ClickHouse-native
-  mechanism (e.g. `ReplacingMergeTree`, `INSERT ... SELECT ... WHERE NOT
-  EXISTS`), never assumed for free from `ORDER BY`/`PRIMARY KEY` the way
-  it would be from a Postgres `PRIMARY KEY` constraint.
+  See `Ecto.Adapters.ClickHouse`'s moduledoc for the short version. In
+  short: ClickHouse never enforces uniqueness on `ORDER BY`/`PRIMARY KEY`,
+  and there's no autoincrement, so relying on Ecto's default autogenerated
+  `:id` silently writes `0` for every row instead of raising. Use
+  `primary_key: false` with an explicit, application-supplied id, and
+  remember ClickHouse won't reject a duplicate on its own -- deduplication
+  has to be handled at the application level or via a ClickHouse-native
+  mechanism like `ReplacingMergeTree` if you need it.
   """
 
   alias Ecto.Adapters.ClickHouse.Naming

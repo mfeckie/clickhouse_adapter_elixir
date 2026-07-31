@@ -2,32 +2,18 @@ defmodule Ecto.Adapters.ClickHouse.Connection do
   @moduledoc """
   Implements `Ecto.Adapters.SQL.Connection` on top of `ChDriver`.
 
-  ## Parameter binding
+  Query params (`?` placeholders in generated SQL) are sent to ClickHouse
+  as native protocol parameters rather than inlined as SQL literals, so
+  there's no client-side value escaping to get wrong. `nil` is the one
+  exception -- ClickHouse's parameter protocol has no type-independent
+  NULL, so it's inlined as the literal `NULL` token instead.
 
-  SQL is generated the normal Ecto way with `?` placeholders (see
-  `expr/3`, `insert/8`), matching every other `Ecto.Adapters.SQL.Connection`
-  implementation. Rather than inlining the corresponding runtime values as
-  SQL literals, `%ChDriver.Query{}`'s `DBConnection.Query` implementation
-  (see `ch_driver/lib/ch_driver/query.ex`) rewrites each `?` into a
-  ClickHouse native `{pN:Type}` parameter placeholder and sends the actual
-  value alongside the query through `ChDriver`'s query-parameters wire
-  mechanism (see `ChDriver.Protocol.encode_query/2`) -- the value's bytes
-  never pass through the SQL text at all, so there's nothing to escape and
-  no `?` inside a string literal or raw fragment can be mistaken for a
-  bind placeholder (the one-time lexer this drives, `ChDriver.Query`'s
-  `lex_placeholders/1`, tracks quoted regions while scanning).
-
-  ClickHouse's parameter mechanism has no type-independent way to express
-  NULL (see `ChDriver.Params.text/1`), so a `nil` value is the one
-  exception: it's inlined directly as the literal `NULL` token, which
-  carries no injection risk since it's a fixed constant.
-
-  This module itself no longer does any of that lexing/binding -- it just
-  builds a `%ChDriver.Query{statement: sql}` and lets `DBConnection`'s
-  normal parse/encode/execute flow (driven by `Ecto.Adapters.SQL`'s own
-  query cache) do it, once per distinct prepared query shape rather than
-  on every execute. See `ChDriver.Query`'s moduledoc for the full
-  rationale.
+  Statement generation lives in `Ecto.Adapters.ClickHouse.QueryBuilder`
+  (`all/2`, `insert/8`, etc) and `Ecto.Adapters.ClickHouse.Expression`
+  (clause/expression rendering); DDL generation lives in
+  `Ecto.Adapters.ClickHouse.DDL`. This module implements the
+  `Ecto.Adapters.SQL.Connection` behaviour itself and mostly delegates to
+  those.
   """
 
   @behaviour Ecto.Adapters.SQL.Connection
@@ -98,34 +84,20 @@ defmodule Ecto.Adapters.ClickHouse.Connection do
   end
 
   @doc """
-  Builds a `%ChDriver.Stream{}` (see its moduledoc, and
-  `ChDriver.DBConnection`'s "Cursors" section, for exactly how this stays
-  genuinely incremental -- one ClickHouse wire-protocol Data block at a
-  time -- rather than buffering the whole result first) for `statement`,
-  mirroring every other `Ecto.Adapters.SQL.Connection`'s `stream/4`
-  implementation (e.g. `Postgrex.Connection.stream/4`, which just calls
-  `Postgrex.stream/4`).
+  Streams query results incrementally, one ClickHouse wire-protocol block
+  at a time, rather than buffering the whole result set first.
 
-  `conn` here is always already a checked-out `%DBConnection{conn_mode:
-  :transaction}` by the time this is called -- `Ecto.Adapters.SQL`'s
-  `reduce/6` (which backs `Repo.stream/2`) guards on exactly that mode
-  before ever reaching here (see `ecto_sql/lib/ecto/adapters/sql.ex`), the
-  same requirement every SQL adapter's `Repo.stream/2` has (Postgres
-  included).
+  This adapter has no session transaction support, and `Repo.stream/2`
+  requires a connection checked out via `Repo.transaction/2`, so
+  `Repo.stream/2` does not work end-to-end on this adapter yet. Use
+  `ChDriver.stream/4` directly against the repo's connection pool instead:
 
-  KNOWN LIMITATION: unlike Postgres, `ChDriver.DBConnection` has no
-  `handle_begin/2` (see its moduledoc -- ClickHouse's native protocol as
-  used here has no session transaction support), so `Repo.transaction/2`
-  itself cannot succeed on this adapter yet, which means `Repo.stream/2`
-  cannot be driven end-to-end through `Ecto.Repo`'s `transaction/2` the
-  normal way. This function, and the underlying `ChDriver.Stream`
-  machinery, are fully real and independently tested (`ch_driver/test/
-  ch_driver/stream_test.exs`,
-  `clickhouse_adapter_ecto/test/integration/stream_test.exs`)
-  via `DBConnection.run/3` directly (which only needs a plain checkout,
-  not a transaction) -- adding real ClickHouse-transaction support to
-  unblock `Repo.transaction/2`/`Repo.stream/2` end-to-end is tracked
-  separately (see the adapter-level stream test's moduledoc).
+      %{pid: pool} = Ecto.Adapter.lookup_meta(MyApp.Repo)
+
+      DBConnection.run(pool, fn conn ->
+        ChDriver.stream(conn, "SELECT id, path FROM page_views", [])
+        |> Enum.each(&IO.inspect/1)
+      end)
   """
   @impl true
   def stream(conn, statement, params, opts) do
