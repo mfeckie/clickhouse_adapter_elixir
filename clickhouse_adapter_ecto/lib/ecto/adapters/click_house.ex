@@ -39,7 +39,7 @@ defmodule Ecto.Adapters.ClickHouse do
   supported for the common case: a `change/0` migration doing
   `create table(...)` auto-reverses to `drop table(...)` cleanly (both are
   synchronous, metadata-only DDL), and the `schema_migrations` bookkeeping
-  row removal that `Ecto.Migration.SchemaMigration`'s `down/4` issues via
+  row removal that Ecto.Migration.SchemaMigration's `down/4` issues via
   `Repo.delete_all/2` is handled by
   `Ecto.Adapters.ClickHouse.Connection`'s `delete_all/1`, which translates it
   into an `ALTER TABLE ... DELETE WHERE ... SETTINGS mutations_sync = 1`

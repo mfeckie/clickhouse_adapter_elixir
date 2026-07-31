@@ -5,7 +5,7 @@ defmodule Ecto.Adapters.ClickHouse.DDL do
   Only `CREATE TABLE [IF NOT EXISTS]` (from `Ecto.Migration.Table` + a
   column list of plain `{:add, name, type, opts}` commands) and
   `DROP TABLE [IF EXISTS]` are implemented -- enough to let
-  `Ecto.Migration.SchemaMigration`'s `ensure_schema_migrations_table!/3`
+  Ecto.Migration.SchemaMigration's `ensure_schema_migrations_table!/3`
   (called internally by `Ecto.Migrator`) create the `schema_migrations`
   table, and for a migration author's own `create table(...)` /
   `drop table(...)` to work for simple, single-statement tables.
