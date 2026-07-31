@@ -153,7 +153,8 @@ defmodule Ecto.Adapters.ClickHouse.ConcurrentTestCase do
   time rather than silently shadowing the wrong table).
   """
 
-  @default_connect_opts [hostname: "localhost", port: 9000, username: "default", password: ""]
+  alias Ecto.Adapters.ClickHouse.TestSupport.Ddl
+
   @default_pool_size 10
 
   @doc """
@@ -215,7 +216,7 @@ defmodule Ecto.Adapters.ClickHouse.ConcurrentTestCase do
   @doc false
   def __start_repo__(repo, connect_opts) do
     opts =
-      @default_connect_opts
+      Ddl.default_connect_opts()
       |> Keyword.put(:database, "default")
       |> Keyword.put(:pool, DBConnection.Ownership)
       |> Keyword.put(:ownership_mode, :manual)
@@ -233,34 +234,16 @@ defmodule Ecto.Adapters.ClickHouse.ConcurrentTestCase do
 
   @doc false
   def __create_permanent_tables__(table_ddls, connect_opts) do
-    with_ddl_conn(connect_opts, fn conn ->
-      for {table, _ddl} <- Enum.reverse(table_ddls) do
-        ChDriver.query(conn, "DROP TABLE IF EXISTS #{table}")
-      end
-
-      for {table, ddl} <- table_ddls do
-        case ChDriver.query(conn, ddl) do
-          {:ok, _} ->
-            :ok
-
-          {:error, error} ->
-            raise "setup_clickhouse_shadow_tables failed to create table #{table}: #{Exception.message(error)}"
-        end
-      end
-    end)
-
-    :ok
+    Ddl.create_tables(
+      table_ddls,
+      connect_opts,
+      "setup_clickhouse_shadow_tables failed to create table"
+    )
   end
 
   @doc false
   def __drop_tables__(table_ddls, connect_opts) do
-    with_ddl_conn(connect_opts, fn conn ->
-      for {table, _ddl} <- Enum.reverse(table_ddls) do
-        ChDriver.query(conn, "DROP TABLE IF EXISTS #{table}")
-      end
-    end)
-
-    :ok
+    Ddl.drop_tables(table_ddls, connect_opts)
   end
 
   @doc false
@@ -308,19 +291,4 @@ defmodule Ecto.Adapters.ClickHouse.ConcurrentTestCase do
     end
   end
 
-  defp with_ddl_conn(connect_opts, fun) do
-    opts =
-      @default_connect_opts
-      |> Keyword.put(:database, "default")
-      |> Keyword.merge(connect_opts)
-      |> Keyword.take([:hostname, :port, :database, :username, :password])
-
-    {:ok, conn} = ChDriver.start_link(opts)
-
-    try do
-      fun.(conn)
-    after
-      GenServer.stop(conn)
-    end
-  end
 end

@@ -125,7 +125,7 @@ defmodule Ecto.Adapters.ClickHouse.TestCase do
   `TRUNCATE`s every listed table before each test.
   """
 
-  @default_connect_opts [hostname: "localhost", port: 9000, username: "default", password: ""]
+  alias Ecto.Adapters.ClickHouse.TestSupport.Ddl
 
   @doc """
   Expands to a `setup_all` (start `repo`, create every table in
@@ -165,7 +165,7 @@ defmodule Ecto.Adapters.ClickHouse.TestCase do
   @doc false
   def __start_repo__(repo, connect_opts) do
     opts =
-      @default_connect_opts
+      Ddl.default_connect_opts()
       |> Keyword.put(:database, "default")
       |> Keyword.put(:pool_size, 5)
       |> Keyword.merge(connect_opts)
@@ -176,43 +176,17 @@ defmodule Ecto.Adapters.ClickHouse.TestCase do
 
   @doc false
   def __create_tables__(table_ddls, connect_opts) do
-    with_ddl_conn(connect_opts, fn conn ->
-      # Reverse order for DROP: a table listed after another (e.g.
-      # `join_comments` after `join_posts`) is assumed to reference it, so
-      # it must be dropped first to avoid depending on ClickHouse enforcing
-      # (or not enforcing) any ordering itself.
-      for {table, _ddl} <- Enum.reverse(table_ddls) do
-        ChDriver.query(conn, "DROP TABLE IF EXISTS #{table}")
-      end
-
-      for {table, ddl} <- table_ddls do
-        case ChDriver.query(conn, ddl) do
-          {:ok, _} ->
-            :ok
-
-          {:error, error} ->
-            raise "setup_clickhouse_tables failed to create table #{table}: #{Exception.message(error)}"
-        end
-      end
-    end)
-
-    :ok
+    Ddl.create_tables(table_ddls, connect_opts, "setup_clickhouse_tables failed to create table")
   end
 
   @doc false
   def __drop_tables__(table_ddls, connect_opts) do
-    with_ddl_conn(connect_opts, fn conn ->
-      for {table, _ddl} <- Enum.reverse(table_ddls) do
-        ChDriver.query(conn, "DROP TABLE IF EXISTS #{table}")
-      end
-    end)
-
-    :ok
+    Ddl.drop_tables(table_ddls, connect_opts)
   end
 
   @doc false
   def __truncate_tables__(table_ddls, connect_opts) do
-    with_ddl_conn(connect_opts, fn conn ->
+    Ddl.with_ddl_conn(connect_opts, fn conn ->
       for {table, _ddl} <- table_ddls do
         case ChDriver.query(conn, "TRUNCATE TABLE #{table}") do
           {:ok, _} ->
@@ -225,21 +199,5 @@ defmodule Ecto.Adapters.ClickHouse.TestCase do
     end)
 
     :ok
-  end
-
-  defp with_ddl_conn(connect_opts, fun) do
-    opts =
-      @default_connect_opts
-      |> Keyword.put(:database, "default")
-      |> Keyword.merge(connect_opts)
-      |> Keyword.take([:hostname, :port, :database, :username, :password])
-
-    {:ok, conn} = ChDriver.start_link(opts)
-
-    try do
-      fun.(conn)
-    after
-      GenServer.stop(conn)
-    end
   end
 end
