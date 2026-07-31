@@ -98,7 +98,11 @@ defmodule Ecto.Adapters.ClickHouse.StreamIntegrationTest do
 
     for id <- 1..1000 do
       {:ok, _} =
-        ChDriver.query(conn, "INSERT INTO stream_events (id, value) VALUES (?, ?)", [id, id * 10])
+        ChDriver.query(
+          conn,
+          "INSERT INTO stream_events (id, value) SETTINGS async_insert = 0 VALUES (?, ?)",
+          [id, id * 10]
+        )
     end
 
     :ok

@@ -32,7 +32,7 @@ jobs:
     # local dev stay identical.
     services:
       clickhouse:
-        image: clickhouse/clickhouse-server:24.8
+        image: clickhouse/clickhouse-server:26.7
         ports:
           - 9000:9000
           - 8123:8123

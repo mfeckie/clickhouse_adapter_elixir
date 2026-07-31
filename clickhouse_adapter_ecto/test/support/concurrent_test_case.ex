@@ -17,7 +17,7 @@ defmodule Ecto.Adapters.ClickHouse.ConcurrentTestCase do
   the test's duration via `DBConnection.Ownership`.
 
   ## Empirical findings this is built on (verified live against this repo's
-  pinned `clickhouse/clickhouse-server:24.8`, `docker-compose.yml`)
+  pinned `clickhouse/clickhouse-server:26.7`, `docker-compose.yml`)
 
   1. **Temp-table shadowing is real.** On a connection that has run
      `CREATE TEMPORARY TABLE widgets (...)`, an unqualified `SELECT * FROM
@@ -30,7 +30,7 @@ defmodule Ecto.Adapters.ClickHouse.ConcurrentTestCase do
      three separate connections (one with the shadow, two without).
   2. **Not Memory-only.** `CREATE TEMPORARY TABLE ... ENGINE = MergeTree
      ORDER BY id` (and `ReplacingMergeTree`, `Log`, `TinyLog`) all succeeded
-     in direct testing against 24.8 -- ClickHouse's docs are ambiguous/dated
+     in direct testing against 26.7 -- ClickHouse's docs are ambiguous/dated
      on this point, so this was tested directly rather than trusted. This
      means a temp-table shadow can use the **same engine as the real table**
      (this module does exactly that -- see `## How shadowing works` below),

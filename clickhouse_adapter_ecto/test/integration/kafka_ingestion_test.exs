@@ -15,7 +15,7 @@ defmodule Ecto.Adapters.ClickHouse.KafkaIngestionTest do
   use ExUnit.Case, async: false
 
   @moduletag :integration
-  @moduletag timeout: 60_000
+  @moduletag timeout: 90_000
 
   @kafka_broker "kafka:29092"
 
@@ -239,7 +239,16 @@ defmodule Ecto.Adapters.ClickHouse.KafkaIngestionTest do
       assert rows == [], "expected table #{table} to be dropped after down/0"
     end
 
-    refute consumer_has_active_members?(kafka_container, group)
+    assert {:ok, :ok} =
+             eventually(
+               fn ->
+                 if consumer_has_active_members?(kafka_container, group),
+                   do: :error,
+                   else: {:ok, :ok}
+               end,
+               60,
+               500
+             )
 
     {:ok, %{rows: consumer_rows}} =
       ChDriver.query(

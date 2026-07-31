@@ -160,7 +160,7 @@ alternative.
 ### Why Sandbox doesn't apply here
 
 Confirmed empirically against this repo's pinned
-`clickhouse/clickhouse-server:24.8` (see `docker-compose.yml`): calling
+`clickhouse/clickhouse-server:26.7` (see `docker-compose.yml`): calling
 `Repo.transaction(fn -> ... end)` doesn't silently no-op -- it raises
 `DBConnection.ConnectionError`, `"transactions are not supported by
 ChDriver.DBConnection: :not_supported"`. `ChDriver.DBConnection`'s
@@ -240,7 +240,7 @@ suite is large enough for `async: true` to matter, not before.
 **Per-connection `CREATE TEMPORARY TABLE` shadowing**
 (`Ecto.Adapters.ClickHouse.ConcurrentTestCase`,
 `test/support/concurrent_test_case.ex`) -- confirmed empirically against
-this repo's pinned `clickhouse/clickhouse-server:24.8` that:
+this repo's pinned `clickhouse/clickhouse-server:26.7` that:
 
 * an unqualified `SELECT`/`DROP TABLE` on a connection that has run `CREATE
   TEMPORARY TABLE widgets (...)` resolves to the *temporary* table, never

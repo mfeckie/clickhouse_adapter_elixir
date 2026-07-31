@@ -14,7 +14,7 @@ defmodule Ecto.Adapters.ClickHouse.JoinIntegrationTest do
   `join/2` for the full rationale (in short: a plain ClickHouse
   `INNER`/`LEFT JOIN ... ON ...` needs no `ALL`/`ANY` strictness qualifier
   for a simple equality condition against this repo's pinned
-  `clickhouse/clickhouse-server:24.8` image, so the generated SQL stays
+  `clickhouse/clickhouse-server:26.7` image, so the generated SQL stays
   the same standard-SQL shape other Ecto adapters produce).
 
   `delete_all/2` with joins remains unsupported (ClickHouse's

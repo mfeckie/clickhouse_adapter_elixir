@@ -51,7 +51,7 @@ defmodule Ecto.Adapters.ClickHouse.Expression do
   ## association-based `join: assoc(...)` queries). ClickHouse's ANSI-style
   ## `INNER`/`LEFT JOIN ... ON ...` needs no `ALL`/`ANY` strictness
   ## qualifier for a plain equality `ON` condition against the pinned
-  ## `clickhouse/clickhouse-server:24.8` image used by this repo's
+  ## `clickhouse/clickhouse-server:26.7` image used by this repo's
   ## `docker-compose.yml` -- ClickHouse defaults to `ALL` semantics (every
   ## matching row pairing, standard SQL join behaviour) unless a stricter
   ## `join_default_strictness` setting or an explicit `ANY`/`ASOF`/`SEMI`
