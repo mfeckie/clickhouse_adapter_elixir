@@ -14,6 +14,29 @@ defmodule ChNative.Block do
   Multiple blocks are simply concatenated back-to-back with no additional
   framing -- callers should call `decode/1` repeatedly, threading the
   returned `rest` through, until the buffer is exhausted.
+
+  ## Not currently wired into ChDriver
+
+  Neither `encode/2` nor `decode/1` is called anywhere in `ch_driver` today.
+  `ChDriver.Protocol.encode_query/2` hardcodes
+  `@compression_disabled 0` (`ch_driver/lib/ch_driver/protocol.ex:210`,
+  emitted at line 265) and always negotiates compression off, so both
+  outbound and inbound Data blocks are sent/received as plain, un-enveloped
+  Native blocks (see `ch_driver/lib/ch_driver/protocol/native_block.ex`)
+  rather than through this module. The receive-side dispatcher
+  (`ChDriver.Protocol.decode_packet/1` ->
+  `ChDriver.Protocol.NativeBlock.decode_data_packet/1`) never calls this
+  module's `decode/1` either.
+
+  This module (and the `ch_codec` NIFs it wraps) exist as scaffolding for a
+  future compression-negotiation feature, not dead code left over from a
+  removed feature -- LZ4-on-the-wire is a real win for large result sets and
+  is worth doing eventually, but negotiating it is a multi-hour feature
+  (protocol negotiation with the server's Hello response, updated decode
+  dispatch, integration tests against live ClickHouse with compression
+  enabled) that was intentionally scoped out of the code-organization
+  refactor that audited this module. Tracked as a follow-up in
+  `clickhouse_adapter_elixir-szk.11`.
   """
 
   @checksum_size 16
