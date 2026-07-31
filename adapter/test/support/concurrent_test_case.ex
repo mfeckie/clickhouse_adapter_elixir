@@ -9,13 +9,12 @@ defmodule Ecto.Adapters.ClickHouse.ConcurrentTestCase do
   engines heavily enough) that `async: true` is worth the extra moving parts
   below.
 
-  Follow-up to `clickhouse_adapter_elixir-hja` (which shipped the
-  TRUNCATE-based helper and ruled out `Ecto.Adapters.SQL.Sandbox`'s
+  This module investigates a different mechanism from the TRUNCATE-based
+  helper above (which already ruled out `Ecto.Adapters.SQL.Sandbox`'s
   transaction-rollback mechanism -- ClickHouse has no usable transactions,
-  see that module's moduledoc). This module (`clickhouse_adapter_elixir-v7v`)
-  investigated a genuinely different mechanism: per-connection
-  `CREATE TEMPORARY TABLE` shadowing, with one physical connection pinned to
-  one test process for the test's duration via `DBConnection.Ownership`.
+  see that module's moduledoc): per-connection `CREATE TEMPORARY TABLE`
+  shadowing, with one physical connection pinned to one test process for
+  the test's duration via `DBConnection.Ownership`.
 
   ## Empirical findings this is built on (verified live against this repo's
   pinned `clickhouse/clickhouse-server:24.8`, `docker-compose.yml`)
@@ -69,9 +68,7 @@ defmodule Ecto.Adapters.ClickHouse.ConcurrentTestCase do
      same one `Ecto.Adapters.SQL.Sandbox` relies on), checkin releases it
      cleanly, and the pool remains fully reusable afterwards.
 
-  All four checked out, so this was implemented -- see `bd show
-  clickhouse_adapter_elixir-v7v` for the full empirical write-up with actual
-  command output.
+  All four checked out, which is why this module exists.
 
   ## How shadowing works
 

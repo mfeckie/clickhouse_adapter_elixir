@@ -14,9 +14,9 @@ This is a minimal, early-stage adapter. It currently targets basic
 migrations. In short:
 
 * `SELECT` -- `INNER`/`LEFT JOIN` (including association-based
-  `join: assoc(...)` queries) are supported; `:right`/`:full`/`:cross` and
-  ClickHouse-specific ASOF/semi/anti/lateral joins are not. No
-  `GROUP BY`/`HAVING`, `DISTINCT`, or window/set operations yet.
+  `join: assoc(...)` queries), `GROUP BY`, and `HAVING` are supported;
+  `:right`/`:full`/`:cross` and ClickHouse-specific ASOF/semi/anti/lateral
+  joins are not, and there's no `DISTINCT` or window/set operations yet.
 * `INSERT` -- no `:on_conflict`/`:returning` (ClickHouse has no upsert or
   `RETURNING`).
 * `UPDATE`/`DELETE` via `Repo.update!/1`/`Repo.delete!/1` are not supported at
@@ -80,18 +80,32 @@ A schema and a query:
 defmodule MyApp.Event do
   use Ecto.Schema
 
-  @primary_key {:id, Ecto.UUID, autogenerate: true}
+  @primary_key false
   schema "events" do
+    field :id, :string
     field :name, :string
     field :occurred_at, :utc_datetime
   end
 end
 
-MyApp.Repo.insert!(%MyApp.Event{name: "signup", occurred_at: DateTime.utc_now()})
+MyApp.Repo.insert!(%MyApp.Event{
+  id: Ecto.UUID.generate(),
+  name: "signup",
+  occurred_at: DateTime.utc_now() |> DateTime.truncate(:second)
+})
 
 import Ecto.Query
 MyApp.Repo.all(from e in MyApp.Event, where: e.name == "signup", order_by: e.occurred_at)
 ```
+
+Note the schema field is a plain `:string`, not `Ecto.UUID`: ClickHouse's `UUID`
+column round-trips through this adapter as the standard hyphenated text form
+(see `ChDriver.Protocol.NativeBlock.decode_uuid/1`), while `Ecto.UUID`'s own
+`dump/1` produces a raw 16-byte binary meant for Postgres-style binary UUID
+storage -- sent as a query parameter here, ClickHouse rejects it with
+`Cannot parse uuid`. Generate the id with `Ecto.UUID.generate/0` (a plain
+string) and assign it explicitly; there is no adapter-level autogeneration
+for it.
 
 ### `ORDER BY`/primary keys are not what they are in Postgres/MySQL -- read this first
 
@@ -225,9 +239,8 @@ suite is large enough for `async: true` to matter, not before.
 
 **Per-connection `CREATE TEMPORARY TABLE` shadowing**
 (`Ecto.Adapters.ClickHouse.ConcurrentTestCase`,
-`test/support/concurrent_test_case.ex`) -- a follow-up investigation
-(`clickhouse_adapter_elixir-v7v`) confirmed, empirically against this
-repo's pinned `clickhouse/clickhouse-server:24.8`, that:
+`test/support/concurrent_test_case.ex`) -- confirmed empirically against
+this repo's pinned `clickhouse/clickhouse-server:24.8` that:
 
 * an unqualified `SELECT`/`DROP TABLE` on a connection that has run `CREATE
   TEMPORARY TABLE widgets (...)` resolves to the *temporary* table, never

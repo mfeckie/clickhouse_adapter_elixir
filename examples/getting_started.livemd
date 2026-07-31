@@ -1,0 +1,449 @@
+# Getting started with Ecto.Adapters.ClickHouse
+
+## What this is
+
+This notebook is a hands-on tour of `clickhouse_adapter_elixir` -- an
+`Ecto.Adapters.SQL`-based adapter that talks to ClickHouse over its native
+TCP protocol (not HTTP), backed by `ch_driver`, a native-protocol
+`DBConnection` driver.
+
+It walks through:
+
+* connecting to a real ClickHouse instance from Ecto,
+* a migration that demonstrates the single biggest footgun for anyone
+  coming from Postgres/MySQL (`ORDER BY`/`PRIMARY KEY` is **not** a
+  uniqueness constraint here),
+* basic insert/query (CRUD),
+* a `JOIN`,
+* `GROUP BY`/`HAVING`,
+* and a brief streaming example using `ChDriver.stream/4` directly.
+
+Every code cell below has been run against a live, Dockerized ClickHouse
+instance and is known to work as written.
+
+### Prerequisites: getting ClickHouse running
+
+This notebook needs a real ClickHouse server on `localhost:9000` (the
+native protocol port). The easiest way is the `docker-compose.yml` already
+in this repo's `adapter/` directory:
+
+```shell
+cd adapter
+docker compose up -d
+```
+
+Wait for the `clickhouse` service to report healthy (`docker compose ps`),
+then come back here. If you'd rather not use this repo's compose file, the
+minimal equivalent is:
+
+```yaml
+services:
+  clickhouse:
+    image: clickhouse/clickhouse-server:24.8
+    ports:
+      - "9000:9000" # native TCP protocol
+      - "8123:8123" # HTTP, handy for cross-checking with curl/ch
+    environment:
+      CLICKHOUSE_DB: default
+      CLICKHOUSE_USER: default
+      CLICKHOUSE_PASSWORD: ""
+```
+
+This notebook creates its own tables (all prefixed `livemd_`) and drops
+them again at the end, so it's safe to run against a ClickHouse instance
+you're also using for other things.
+
+## Installing dependencies
+
+None of `clickhouse_adapter_elixir`, `ch_driver`, `ch_native`, or
+`ch_codec` are published to Hex yet, so this notebook installs them as
+local path dependencies, relative to this file's location
+(`examples/getting_started.livemd`) in the repo:
+
+```
+clickhouse_adapter_elixir/
+├── adapter/       <- Ecto.Adapters.ClickHouse (app: :clickhouse_adapter_elixir)
+├── ch_driver/      <- native-protocol DBConnection driver (app: :ch_driver)
+├── ch_native/      <- compressed block envelope (app: :ch_native, pulled in transitively)
+├── ch_codec/       <- Rust NIF for LZ4 + CityHash (app: :ch_codec, pulled in transitively)
+└── examples/
+    └── getting_started.livemd   <- you are here
+```
+
+```elixir
+Mix.install([
+  {:clickhouse_adapter_elixir, path: "../adapter"},
+  {:ch_driver, path: "../ch_driver"}
+])
+
+# Once these are published to Hex (see the separate Hex-publishing-readiness
+# issue), swap the cell above for version-pinned Hex deps instead -- e.g.:
+#
+# Mix.install([
+#   {:clickhouse_adapter_elixir, "~> 0.1"},
+#   {:ch_driver, "~> 0.1"}
+# ])
+```
+
+## Connecting a Repo
+
+Point a repo's `adapter` at `Ecto.Adapters.ClickHouse` and start it with
+connection options, exactly like any other `Ecto.Repo` (no `config.exs`
+needed for a standalone notebook like this one):
+
+```elixir
+defmodule MyApp.Repo do
+  use Ecto.Repo, otp_app: :clickhouse_adapter_elixir, adapter: Ecto.Adapters.ClickHouse
+end
+
+{:ok, _} =
+  MyApp.Repo.start_link(
+    hostname: "localhost",
+    port: 9000,
+    database: "default",
+    username: "default",
+    password: ""
+  )
+
+# A second, raw ChDriver connection for running DDL (CREATE/DROP TABLE)
+# outside of Ecto.Migrator -- handy for a notebook where we want to create
+# and tear down tables ourselves rather than write a full migration runner.
+{:ok, ddl_conn} = ChDriver.start_link(hostname: "localhost", port: 9000)
+
+for t <- ["livemd_events", "livemd_posts", "livemd_comments", "livemd_page_views"] do
+  ChDriver.query(ddl_conn, "DROP TABLE IF EXISTS #{t}")
+end
+
+:ok
+```
+
+## The single biggest footgun: `ORDER BY`/`PRIMARY KEY` is not a Postgres-style primary key
+
+Before writing a migration, read this -- it's the thing most likely to
+bite a newcomer.
+
+ClickHouse has **no auto-increment** and **no uniqueness enforcement at
+insert time**. `ORDER BY` (MergeTree's sorting/indexing key, optionally
+narrowed by a separate `PRIMARY KEY` clause) exists purely to let scans
+skip granules efficiently -- it is not a constraint. Duplicate values are
+accepted silently, with no error, ever.
+
+Concretely: `create table(:things) do add :name, :string end`, with no
+`primary_key: false`, does **not** raise. `Ecto.Migration` injects its
+usual `add :id, :bigserial, primary_key: true` default, and this adapter
+happily maps that onto `id UInt64 ... ORDER BY (id)` -- perfectly valid
+ClickHouse DDL. The migration succeeds and everything looks fine.
+
+What actually breaks is silent, and happens *after* the table exists, at
+insert time: this adapter has no `:on_conflict`/`:returning` support and
+ClickHouse has no server-side autoincrement to fall back on, so a schema
+that omits `:id` from an insert (the normal Postgres pattern of "let the
+database generate it") never sends a value for that column at all --
+ClickHouse fills it with the column type's default, `0` for `UInt64`, for
+every single row. Every insert still succeeds; none of the rows are
+distinguishable by "primary key" afterwards.
+
+**The correct pattern**: `primary_key: false` on `table/2`, plus an
+explicit, application-supplied id, plus an explicit `options:`
+`ENGINE`/`ORDER BY`:
+
+```elixir
+defmodule CreateEvents do
+  use Ecto.Migration
+
+  def change do
+    create table(:events, primary_key: false, options: "ENGINE = MergeTree ORDER BY id") do
+      add(:id, :uuid, primary_key: true)
+      add(:name, :string)
+      add(:occurred_at, :utc_datetime)
+    end
+  end
+end
+```
+
+For this notebook we'll skip `Ecto.Migrator` and just issue the equivalent
+`CREATE TABLE` directly through the raw `ChDriver` connection we already
+have -- same DDL a migration using the pattern above would generate:
+
+```elixir
+{:ok, _} =
+  ChDriver.query(ddl_conn, """
+  CREATE TABLE livemd_events (
+    id UUID,
+    name String,
+    occurred_at DateTime
+  ) ENGINE = MergeTree ORDER BY id
+  """)
+```
+
+One more thing this pattern implies: the *schema* also has to supply
+`:id` itself, as a plain `:string` field -- **not** `Ecto.UUID`.
+ClickHouse's `UUID` column round-trips through this adapter as the
+standard hyphenated text form, whereas `Ecto.UUID`'s own `dump/1`
+produces a raw 16-byte binary meant for Postgres-style binary UUID
+storage; sent as a query parameter here, ClickHouse rejects it with
+`Cannot parse uuid`. So `Ecto.UUID.generate/0` is called explicitly and
+assigned as a plain string before insert, with no adapter-side
+autogeneration involved:
+
+```elixir
+defmodule Event do
+  use Ecto.Schema
+
+  @primary_key false
+  schema "livemd_events" do
+    field(:id, :string)
+    field(:name, :string)
+    field(:occurred_at, :utc_datetime)
+  end
+end
+
+:ok
+```
+
+Whichever id strategy you use, remember ClickHouse will never reject a
+duplicate on its own -- deduplication (if wanted at all) has to be
+handled at the application level or via a ClickHouse-native mechanism
+(e.g. `ReplacingMergeTree`), never assumed for free the way it would be
+from a Postgres `PRIMARY KEY` constraint.
+
+See `Ecto.Adapters.ClickHouse.DDL`'s moduledoc for the full empirical
+write-up this section is based on.
+
+## Basic insert/query (CRUD)
+
+With the table and schema in place, insert a row -- `:id` is supplied by
+the application (`Ecto.UUID.generate/0`) rather than left for the
+database to generate, and `occurred_at` is truncated to whole seconds
+because this column was declared `:utc_datetime` (not `:utc_datetime_usec`),
+which cannot hold microseconds:
+
+```elixir
+event =
+  MyApp.Repo.insert!(%Event{
+    id: Ecto.UUID.generate(),
+    name: "signup",
+    occurred_at: DateTime.utc_now(:second)
+  })
+```
+
+And read it back:
+
+```elixir
+import Ecto.Query
+
+MyApp.Repo.all(from(e in Event, where: e.name == "signup", order_by: e.occurred_at))
+```
+
+Note what's *not* here: this adapter doesn't support `Repo.update!/1` or
+`Repo.delete!/1` (ClickHouse mutates data asynchronously via
+`ALTER TABLE ... UPDATE`/`DELETE`, not synchronous SQL), and `INSERT`
+has no `:on_conflict`/`:returning` (ClickHouse has neither upsert nor
+`RETURNING`). See the adapter README's "What's supported" section for the
+full, current list.
+
+## A JOIN example
+
+Only `:inner` and `:left` joins on an explicit `ON` condition are
+supported (`:right`/`:full`/`:cross` and ClickHouse-specific ASOF/semi/
+anti/lateral joins are not) -- the common case for `Ecto.Query`'s
+`join/4,5`. Set up two more tables, `posts` and `comments`:
+
+```elixir
+{:ok, _} =
+  ChDriver.query(
+    ddl_conn,
+    "CREATE TABLE livemd_posts (id UInt64, title String) ENGINE = MergeTree ORDER BY id"
+  )
+
+{:ok, _} =
+  ChDriver.query(
+    ddl_conn,
+    "CREATE TABLE livemd_comments (id UInt64, post_id UInt64, body String) ENGINE = MergeTree ORDER BY id"
+  )
+
+defmodule Post do
+  use Ecto.Schema
+
+  @primary_key false
+  schema "livemd_posts" do
+    field(:id, :integer)
+    field(:title, :string)
+  end
+end
+
+defmodule Comment do
+  use Ecto.Schema
+
+  @primary_key false
+  schema "livemd_comments" do
+    field(:id, :integer)
+    field(:post_id, :integer)
+    field(:body, :string)
+  end
+end
+
+:ok
+```
+
+Seed a couple of posts and a few comments:
+
+```elixir
+MyApp.Repo.insert!(%Post{id: 1, title: "Hello ClickHouse"})
+MyApp.Repo.insert!(%Post{id: 2, title: "Ecto + ClickHouse"})
+MyApp.Repo.insert!(%Comment{id: 100, post_id: 1, body: "Nice!"})
+MyApp.Repo.insert!(%Comment{id: 101, post_id: 1, body: "Another comment"})
+MyApp.Repo.insert!(%Comment{id: 102, post_id: 2, body: "On second post"})
+:ok
+```
+
+Now the join itself:
+
+```elixir
+join_query =
+  from(p in Post,
+    join: c in Comment,
+    on: c.post_id == p.id,
+    select: %{post_title: p.title, comment_body: c.body}
+  )
+
+MyApp.Repo.all(join_query)
+```
+
+One real ClickHouse dialect difference worth knowing about even though it
+doesn't come up in this simple example: unlike Postgres/MySQL, a plain
+ClickHouse `LEFT JOIN` fills an unmatched right side with each column's
+*type default* (`""` for `String`, `0` for numeric types), not SQL
+`NULL`, unless the server has `join_use_nulls = 1` set. Code relying on
+`is_nil/1` against a left-joined column should account for this -- see
+`Ecto.Adapters.ClickHouse.Expression`'s moduledoc for the full note.
+
+## GROUP BY / HAVING
+
+Standard aggregate functions (`count/0,1,2`, `sum/1`, `avg/1`, `min/1`,
+`max/1`) work through the same `Comment`/`Post` tables from above.
+Find posts with more than one comment:
+
+```elixir
+group_query =
+  from(c in Comment,
+    group_by: c.post_id,
+    having: count(c.id) > 1,
+    select: %{post_id: c.post_id, comment_count: count(c.id)}
+  )
+
+MyApp.Repo.all(group_query)
+```
+
+`DISTINCT`, window/set operations, and ClickHouse's own
+`GROUP BY ... WITH TOTALS`/`WITH ROLLUP`/`WITH CUBE` modifiers aren't
+supported yet -- see `Ecto.Adapters.ClickHouse.Expression`'s moduledoc for
+what's in and out of scope.
+
+## Streaming rows with `ChDriver.stream/4` (not `Repo.stream/2`)
+
+`Ecto.Adapters.ClickHouse.Connection.stream/4` is real and fully wired to
+`ChDriver.stream/4` -- rows come back incrementally, one wire-protocol
+Data block at a time, rather than the whole result buffering in memory
+first. But there's a documented, currently-unresolved limitation: Ecto's
+`Repo.stream/2` requires a connection checked out via
+`Repo.transaction/2` (`Ecto.Adapters.SQL.reduce/6` raises
+`"cannot reduce stream outside of transaction"` otherwise), and this
+adapter has no session transaction support --
+`ChDriver.DBConnection.handle_begin/2` is a deliberate stub, because
+ClickHouse's native protocol as used here has no session transactions.
+So `Repo.transaction/2` itself cannot succeed yet, which means
+`Repo.stream/2` cannot be driven end-to-end through `Ecto.Repo` the
+normal way.
+
+The underlying streaming machinery is fully real and tested independently
+of `Repo.stream/2`, though -- called directly via `DBConnection.run/3`
+(which only needs a plain checkout, not a transaction). That's what this
+section demonstrates: `ChDriver.stream/4` used directly against the pool,
+not through `Repo.stream/2`.
+
+First, seed 500 rows across many small inserts (so the result naturally
+spans multiple wire-protocol blocks):
+
+```elixir
+{:ok, _} =
+  ChDriver.query(
+    ddl_conn,
+    "CREATE TABLE livemd_page_views (id UInt64, path String) ENGINE = MergeTree ORDER BY id"
+  )
+
+for id <- 1..500 do
+  {:ok, _} =
+    ChDriver.query(ddl_conn, "INSERT INTO livemd_page_views (id, path) VALUES (?, ?)", [
+      id,
+      "/page/#{rem(id, 5)}"
+    ])
+end
+
+:ok
+```
+
+Then stream it, using `ChDriver.stream/4` directly against a checked-out
+connection from the repo's own pool (`Ecto.Adapter.lookup_meta/1` gets us
+the pool pid; `DBConnection.run/3` checks out a connection for the
+duration of the function):
+
+```elixir
+%{pid: pool} = Ecto.Adapter.lookup_meta(MyApp.Repo)
+
+statement = "SELECT id, path FROM livemd_page_views SETTINGS max_block_size = 50"
+
+{block_count, row_count} =
+  DBConnection.run(pool, fn conn ->
+    ChDriver.stream(conn, statement, [])
+    |> Enum.reduce({0, 0}, fn %ChDriver.Result{rows: rows}, {blocks, rows_acc} ->
+      {blocks + 1, rows_acc + length(rows)}
+    end)
+  end)
+
+{block_count, row_count}
+```
+
+`max_block_size = 50` reliably chunks the result into multiple blocks
+(500 rows / 50 = several blocks), proving the stream genuinely delivers
+data incrementally rather than buffering everything up front and merely
+presenting it lazily afterwards. Adding real ClickHouse session
+transaction support to unblock `Repo.transaction/2`/`Repo.stream/2`
+end-to-end is tracked separately -- see
+`Ecto.Adapters.ClickHouse.Connection.stream/4`'s moduledoc for the full
+write-up.
+
+## Cleaning up
+
+Drop everything this notebook created:
+
+```elixir
+for t <- ["livemd_events", "livemd_posts", "livemd_comments", "livemd_page_views"] do
+  ChDriver.query(ddl_conn, "DROP TABLE IF EXISTS #{t}")
+end
+
+:ok
+```
+
+## Where to go next
+
+This notebook only scratches the surface. For anything not covered here:
+
+* **`adapter/README.md`** -- what's supported end to end (SELECT/INSERT,
+  migrations, storage), installation, and the full write-up on why
+  `Ecto.Adapters.SQL.Sandbox` doesn't work with this adapter and what to
+  use instead for test isolation (`Ecto.Adapters.ClickHouse.TestCase`).
+* **`Ecto.Adapters.ClickHouse.DDL`'s moduledoc** -- exactly which DDL
+  operations are safe to auto-reverse via `change/0` versus which need
+  explicit `up/0`/`down/0` (data-skipping indices, `MODIFY ORDER BY`,
+  Kafka-engine tables and materialized views, projections, and more).
+* **`Ecto.Adapters.ClickHouse.Expression`'s moduledoc** -- the exact
+  rendering rules for `SELECT`/`WHERE`/`JOIN`/`GROUP BY`/`HAVING`/
+  `ORDER BY` and which Ecto query constructs raise instead of being
+  silently mishandled.
+* **`Ecto.Adapters.ClickHouse.Connection`'s moduledoc** (`stream/4` in
+  particular) -- the full account of the `Repo.stream/2` transaction
+  limitation touched on above.
+* **`ch_driver/lib/ch_driver.ex`'s moduledoc** -- the driver's public
+  surface (`start_link/1`, `query/2,3,4`, `stream/2,3,4`) if you want to
+  use it directly, independent of Ecto.

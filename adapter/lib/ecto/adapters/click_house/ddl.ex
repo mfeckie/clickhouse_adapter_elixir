@@ -315,17 +315,25 @@ defmodule Ecto.Adapters.ClickHouse.DDL do
   paired with a schema that supplies `:id` itself rather than trusting
   the adapter/database to autogenerate it:
 
-      @primary_key {:id, Ecto.UUID, autogenerate: true}
+      @primary_key false
       schema "events" do
+        field(:id, :string)
         field(:name, :string)
         field(:occurred_at, :utc_datetime)
       end
 
-  `Ecto.UUID`'s `autogenerate: true` generates the UUID client-side in
-  Elixir before the insert is ever sent (unlike `:id`/`:bigserial`, whose
-  `autogenerate: true` means "ask the database"), so it round-trips
-  correctly with this adapter today with no adapter-side autogeneration
-  support required. Whichever id strategy is used, remember ClickHouse
+      Repo.insert!(%Event{id: Ecto.UUID.generate(), name: ..., occurred_at: ...})
+
+  The schema field is a plain `:string`, not `Ecto.UUID`: ClickHouse's
+  `UUID` column round-trips through this adapter as the standard
+  hyphenated text form (see `ChDriver.Protocol.NativeBlock.decode_uuid/1`),
+  while `Ecto.UUID`'s own `dump/1` produces a raw 16-byte binary meant for
+  Postgres-style binary UUID storage -- sent as a query parameter here,
+  ClickHouse rejects it with `Cannot parse uuid`. So `Ecto.UUID.generate/0`
+  is used directly as a plain string, assigned explicitly before insert,
+  with no adapter-side autogeneration involved.
+
+  Whichever id strategy is used, remember ClickHouse
   will not reject a duplicate: deduplication (if wanted at all) has to be
   handled either at the application level or via a ClickHouse-native
   mechanism (e.g. `ReplacingMergeTree`, `INSERT ... SELECT ... WHERE NOT
