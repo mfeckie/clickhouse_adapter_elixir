@@ -8,7 +8,7 @@ defmodule Ecto.Adapters.ClickHouse.Expression do
   fragment or operator is supported, so it stays focused purely on that.
   """
 
-  alias Ecto.Query.{BooleanExpr, ByExpr, QueryExpr}
+  alias Ecto.Query.{BooleanExpr, ByExpr, JoinExpr, QueryExpr}
   alias Ecto.Adapters.ClickHouse.Naming
 
   @doc false
@@ -44,6 +44,76 @@ defmodule Ecto.Adapters.ClickHouse.Expression do
   def from(_query, sources) do
     {from_sql, name, _schema} = elem(sources, 0)
     [" FROM ", from_sql, " AS ", name]
+  end
+
+  ## `JOIN` -- only `INNER JOIN`/`LEFT JOIN` on an explicit `ON` condition
+  ## are supported (the common case for `Ecto.Query`'s `join/4,5` and
+  ## association-based `join: assoc(...)` queries). ClickHouse's ANSI-style
+  ## `INNER`/`LEFT JOIN ... ON ...` needs no `ALL`/`ANY` strictness
+  ## qualifier for a plain equality `ON` condition against the pinned
+  ## `clickhouse/clickhouse-server:24.8` image used by this repo's
+  ## `docker-compose.yml` -- ClickHouse defaults to `ALL` semantics (every
+  ## matching row pairing, standard SQL join behaviour) unless a stricter
+  ## `join_default_strictness` setting or an explicit `ANY`/`ASOF`/`SEMI`
+  ## qualifier says otherwise, so the generated SQL stays exactly the
+  ## standard-SQL shape other Ecto adapters (Postgres, MyXQL) produce
+  ## instead of ClickHouse-specific syntax.
+  ##
+  ## Explicitly out of scope (raise instead of silently mishandling):
+  ##
+  ##   * `:right`/`:full`/`:cross` -- and any ClickHouse-specific ASOF/semi/
+  ##     anti/lateral/array join, which Ecto surfaces via `qual:` values this
+  ##     adapter doesn't recognize or via `hints:` -- can be added later if
+  ##     needed, but nothing here maps a `qual` to them today.
+  ##   * `hints:` (Ecto's `join/5` `hints:` option) -- there is no
+  ##     ClickHouse-specific hint support (e.g. `ANY`/`ASOF` strictness,
+  ##     join algorithm hints) implemented, so any join with hints raises
+  ##     rather than silently dropping them.
+  ##
+  ## One real dialect difference this does *not* try to paper over: unlike
+  ## Postgres/MySQL, a plain ClickHouse `LEFT JOIN` fills an unmatched right
+  ## side with each column's *type default* (`""` for `String`, `0` for
+  ## numeric types, etc.), not SQL `NULL`, unless the server has
+  ## `join_use_nulls = 1` set (off by default) and the column is
+  ## `Nullable(...)`. Callers relying on `is_nil/1` against a left-joined
+  ## column should account for this.
+  @doc false
+  def join(%{joins: []}, _sources), do: []
+
+  def join(%{joins: joins} = query, sources) do
+    Enum.map(joins, &join_expr(&1, sources, query))
+  end
+
+  defp join_expr(%JoinExpr{hints: [_ | _] = hints}, _sources, query) do
+    Naming.error!(
+      query,
+      "the ClickHouse adapter does not support join hints yet (got #{inspect(hints)})"
+    )
+  end
+
+  defp join_expr(%JoinExpr{qual: qual, ix: ix, on: %QueryExpr{expr: on_expr}}, sources, query) do
+    {source_sql, name, _schema} = elem(sources, ix)
+
+    [
+      join_qual(qual, query),
+      source_sql,
+      " AS ",
+      name,
+      " ON ",
+      expr(on_expr, sources, query)
+    ]
+  end
+
+  defp join_qual(:inner, _query), do: " INNER JOIN "
+  defp join_qual(:left, _query), do: " LEFT JOIN "
+
+  defp join_qual(qual, query) do
+    Naming.error!(
+      query,
+      "the ClickHouse adapter only supports :inner and :left joins on an explicit ON " <>
+        "condition (got #{inspect(qual)}) -- :right/:full/:cross and ClickHouse-specific " <>
+        "ASOF/semi/anti/lateral joins are not implemented"
+    )
   end
 
   @doc false

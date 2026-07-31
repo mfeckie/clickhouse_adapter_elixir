@@ -16,14 +16,11 @@ defmodule Ecto.Adapters.ClickHouse.QueryBuilder do
 
     from = Expression.from(query, sources)
     select = Expression.select(query, sources)
+    join = Expression.join(query, sources)
     where = Expression.where(query, sources)
     order_by = Expression.order_by(query, sources)
     limit = Expression.limit(query, sources)
     offset = Expression.offset(query, sources)
-
-    unless query.joins == [] do
-      Naming.error!(query, "the ClickHouse adapter does not support joins yet")
-    end
 
     unless query.group_bys == [] and query.havings == [] do
       Naming.error!(query, "the ClickHouse adapter does not support GROUP BY/HAVING yet")
@@ -33,7 +30,7 @@ defmodule Ecto.Adapters.ClickHouse.QueryBuilder do
       Naming.error!(query, "the ClickHouse adapter does not support windows/set operations yet")
     end
 
-    [select, from, where, order_by, limit, offset]
+    [select, from, join, where, order_by, limit, offset]
   end
 
   @doc false
@@ -80,7 +77,15 @@ defmodule Ecto.Adapters.ClickHouse.QueryBuilder do
   @doc false
   def delete_all(%{sources: sources} = query) do
     unless query.joins == [] do
-      Naming.error!(query, "the ClickHouse adapter does not support joins in delete_all/2")
+      Naming.error!(
+        query,
+        "the ClickHouse adapter does not support joins in delete_all/2 -- ClickHouse's " <>
+          "`ALTER TABLE ... DELETE` mutation (see the moduledoc above) only accepts a bare " <>
+          "WHERE clause against a single table, with no join support; this is a deliberate " <>
+          "scope limit, not a temporary gap -- issue the equivalent as a raw " <>
+          "`ALTER TABLE ... DELETE WHERE <subquery-based condition>` query instead if you " <>
+          "need join-driven delete semantics"
+      )
     end
 
     unless query.limit == nil and query.offset == nil do
