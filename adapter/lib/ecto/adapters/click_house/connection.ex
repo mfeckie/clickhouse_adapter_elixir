@@ -607,6 +607,46 @@ defmodule Ecto.Adapters.ClickHouse.Connection do
   ##   underneath it goes away, so there is no window where a poll batch
   ##   can fire into a broken pipeline.
   ##
+  ## ## `FixedString(N)`, `LowCardinality(T)`, and `Map(K, V)` in migrations
+  ##
+  ## All three are ClickHouse-specific column types with no built-in Ecto
+  ## migration type, so all three ultimately reach `column_type!/1` as the
+  ## quoted-atom escape hatch below (`add(:col, :"FixedString(16)")`) --
+  ## `Ecto.Migration.add/3` validates its own `type` argument before this
+  ## module ever sees it, and that validation unconditionally rejects any
+  ## `Ecto.Type`/`Ecto.ParameterizedType` module (passing
+  ## one directly raises "Types defined through Ecto.Type or
+  ## Ecto.ParameterizedType aren't allowed, use their underlying types
+  ## instead"), so no amount of adapter-side wiring can make a real
+  ## parameterized-type module itself acceptable as a migration `add/3`
+  ## type -- the quoted atom is the only spelling Ecto leaves available.
+  ##
+  ## `Ecto.Adapters.ClickHouse.Migration.fixed_string/1` and `.low_cardinality/1`
+  ## build that quoted atom for you, with the parameter validated up front
+  ## instead of only surfacing as a ClickHouse DDL error at migration time:
+  ##
+  ##     add(:code, Ecto.Adapters.ClickHouse.Migration.fixed_string(16))
+  ##     add(:status, Ecto.Adapters.ClickHouse.Migration.low_cardinality(:string))
+  ##
+  ## `FixedString(N)` additionally gets a full `Ecto.ParameterizedType` --
+  ## `Ecto.Adapters.ClickHouse.Types.FixedString` -- for the schema side,
+  ## where `add/3`'s restriction above doesn't apply:
+  ##
+  ##     field :code, Ecto.Adapters.ClickHouse.Types.FixedString, size: 16
+  ##
+  ## `LowCardinality(T)` does not get one, by design: it's transparent to
+  ## callers (`ChDriver.Protocol.NativeBlock` decodes it to the exact same
+  ## Elixir value `T` would decode to on its own), so a plain `field
+  ## :status, :string` (or whatever `T` maps to) already behaves correctly
+  ## with no dedicated type -- `low_cardinality/1` exists purely to
+  ## validate and build the migration-side type string. `Map(K, V)` gets
+  ## neither: it has two independent type parameters (and ClickHouse
+  ## further restricts which types `K` may be), and no builder here
+  ## enforces that -- see `Ecto.Adapters.ClickHouse.Migration`'s moduledoc
+  ## for the full reasoning. Use the raw quoted atom directly for `Map`:
+  ##
+  ##     add(:m, :"Map(String, UInt32)")
+  ##
   ## Every table this generates DDL for needs an `ENGINE`. If the migration
   ## author passes `options: "ENGINE = ... "` (via `table(:foo, options:
   ## "ENGINE = MergeTree ORDER BY id")`) that raw string is used verbatim;
@@ -723,24 +763,30 @@ defmodule Ecto.Adapters.ClickHouse.Connection do
             "CREATE TABLE -- got: #{inspect(other)} (no :alter/:modify/:remove support)"
   end
 
-  defp column_type!(:id), do: "UInt64"
-  defp column_type!(:serial), do: "UInt64"
-  defp column_type!(:bigserial), do: "UInt64"
-  defp column_type!(:integer), do: "Int32"
-  defp column_type!(:bigint), do: "Int64"
-  defp column_type!(:smallint), do: "Int16"
-  defp column_type!(:float), do: "Float64"
-  defp column_type!(:boolean), do: "UInt8"
-  defp column_type!(:string), do: "String"
-  defp column_type!(:text), do: "String"
-  defp column_type!(:binary), do: "String"
-  defp column_type!(:uuid), do: "UUID"
-  defp column_type!(:naive_datetime), do: "DateTime"
-  defp column_type!(:naive_datetime_usec), do: "DateTime64(6)"
-  defp column_type!(:utc_datetime), do: "DateTime"
-  defp column_type!(:utc_datetime_usec), do: "DateTime64(6)"
-  defp column_type!(:date), do: "Date"
-  defp column_type!(:decimal), do: "Decimal(38, 9)"
+  # Exposed (rather than kept `defp`) so
+  # `Ecto.Adapters.ClickHouse.Migration.low_cardinality/1` can resolve an
+  # inner Ecto type to its ClickHouse column-type string through the same
+  # single mapping this module's own DDL generation uses, instead of
+  # duplicating it.
+  @doc false
+  def column_type!(:id), do: "UInt64"
+  def column_type!(:serial), do: "UInt64"
+  def column_type!(:bigserial), do: "UInt64"
+  def column_type!(:integer), do: "Int32"
+  def column_type!(:bigint), do: "Int64"
+  def column_type!(:smallint), do: "Int16"
+  def column_type!(:float), do: "Float64"
+  def column_type!(:boolean), do: "UInt8"
+  def column_type!(:string), do: "String"
+  def column_type!(:text), do: "String"
+  def column_type!(:binary), do: "String"
+  def column_type!(:uuid), do: "UUID"
+  def column_type!(:naive_datetime), do: "DateTime"
+  def column_type!(:naive_datetime_usec), do: "DateTime64(6)"
+  def column_type!(:utc_datetime), do: "DateTime"
+  def column_type!(:utc_datetime_usec), do: "DateTime64(6)"
+  def column_type!(:date), do: "Date"
+  def column_type!(:decimal), do: "Decimal(38, 9)"
 
   # `IPv4`/`IPv6` (clickhouse_adapter_elixir-8a2.21) decode to their dotted-
   # quad/colon-hex text forms (see
@@ -750,14 +796,14 @@ defmodule Ecto.Adapters.ClickHouse.Connection do
   # confirmed live) -- so, like `:uuid`, they're plain first-class Ecto
   # migration types here with a plain `:string` schema field on the other
   # end.
-  defp column_type!(:ipv4), do: "IPv4"
-  defp column_type!(:ipv6), do: "IPv6"
+  def column_type!(:ipv4), do: "IPv4"
+  def column_type!(:ipv6), do: "IPv6"
 
   # `{:array, inner_type}` is Ecto's own built-in shorthand for an array
   # column (`add(:tags, {:array, :string})` in a migration) -- maps
   # straight onto ClickHouse's `Array(T)` (clickhouse_adapter_elixir-8a2.19),
   # recursing so `{:array, :integer}` -> `Array(Int32)`, etc.
-  defp column_type!({:array, inner_type}), do: "Array(#{column_type!(inner_type)})"
+  def column_type!({:array, inner_type}), do: "Array(#{column_type!(inner_type)})"
 
   # A raw ClickHouse type given verbatim as a *quoted atom* (e.g.
   # `add(:status, :"LowCardinality(String)")`) -- `Ecto.Migration.add/3`
@@ -775,7 +821,7 @@ defmodule Ecto.Adapters.ClickHouse.Connection do
   # maps to) on the schema side). Guarded on containing `(` so a genuine
   # typo'd Ecto type atom (e.g. `:sting`) still raises the helpful error
   # below instead of silently becoming bogus DDL.
-  defp column_type!(other) when is_atom(other) do
+  def column_type!(other) when is_atom(other) do
     raw = Atom.to_string(other)
 
     if String.contains?(raw, "(") do
@@ -785,7 +831,7 @@ defmodule Ecto.Adapters.ClickHouse.Connection do
     end
   end
 
-  defp column_type!(other), do: raise_unknown_column_type!(other)
+  def column_type!(other), do: raise_unknown_column_type!(other)
 
   defp raise_unknown_column_type!(other) do
     raise ArgumentError,
