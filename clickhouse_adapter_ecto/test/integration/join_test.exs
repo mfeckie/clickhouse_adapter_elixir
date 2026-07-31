@@ -4,11 +4,11 @@ defmodule Ecto.Adapters.ClickHouse.JoinIntegrationTest do
   `Ecto.Adapters.ClickHouse.Expression.join/2` and
   `Ecto.Adapters.ClickHouse.QueryBuilder.all/2`).
 
-  Only `:inner` and `:left` joins against an explicit `ON` condition are
-  supported -- the common case for `Ecto.Query`'s `join/4,5` and
-  association-based (`join: assoc(...)`, `has_many`/`belongs_to`) queries.
-  `:right`/`:full`/`:cross` and any ClickHouse-specific ASOF/semi/anti/
-  lateral/array join are explicitly out of scope and raise a clear
+  `:inner`, `:left`, `:right`, `:full`, and `:cross` joins against an
+  explicit `ON` condition are supported -- the common case for
+  `Ecto.Query`'s `join/4,5` and association-based (`join: assoc(...)`,
+  `has_many`/`belongs_to`) queries. Any ClickHouse-specific ASOF/semi/
+  anti/lateral/array join is explicitly out of scope and raises a clear
   `Ecto.QueryError` instead of being silently mishandled -- see
   `Ecto.Adapters.ClickHouse.Expression`'s moduledoc-adjacent comment above
   `join/2` for the full rationale (in short: a plain ClickHouse
@@ -169,19 +169,77 @@ defmodule Ecto.Adapters.ClickHouse.JoinIntegrationTest do
            ] = TestRepo.all(query)
   end
 
-  test "an unsupported join qualifier (:right) raises a clear Ecto.QueryError instead of silently mishandling it" do
+  test "a RIGHT JOIN via join/4 includes rows from the right side with no match" do
+    seed()
+
+    TestRepo.insert!(%Comment{id: 200, post_id: 99, body: "comment on a missing post"})
+
     import Ecto.Query
 
     query =
       from(p in Post,
         right_join: c in Comment,
         on: c.post_id == p.id,
+        where: c.id == 200,
         select: {p.title, c.body}
       )
 
-    assert_raise Ecto.QueryError, ~r/only supports :inner and :left joins/, fn ->
-      TestRepo.all(query)
-    end
+    {sql, _params} = Ecto.Adapters.SQL.to_sql(:all, TestRepo, query)
+    assert sql =~ "RIGHT JOIN"
+
+    assert [{"", "comment on a missing post"}] = TestRepo.all(query)
+  end
+
+  test "a FULL JOIN via join/4 includes unmatched rows from both sides" do
+    seed()
+
+    import Ecto.Query
+
+    query =
+      from(p in Post,
+        full_join: c in Comment,
+        on: c.post_id == p.id,
+        select: {p.title, c.body}
+      )
+
+    {sql, _params} = Ecto.Adapters.SQL.to_sql(:all, TestRepo, query)
+    assert sql =~ "FULL JOIN"
+    assert length(TestRepo.all(query)) == 3
+  end
+
+  test "a CROSS JOIN via join/4 with no ON condition pairs every row of both sides, with no ON clause emitted" do
+    seed()
+
+    import Ecto.Query
+
+    query =
+      from(p in Post,
+        cross_join: c in Comment,
+        select: {p.title, c.body}
+      )
+
+    {sql, _params} = Ecto.Adapters.SQL.to_sql(:all, TestRepo, query)
+    assert sql =~ "CROSS JOIN"
+    refute sql =~ " ON "
+
+    assert length(TestRepo.all(query)) == 6
+  end
+
+  test "an unsupported join qualifier (:inner_lateral) raises a clear Ecto.QueryError instead of silently mishandling it" do
+    import Ecto.Query
+
+    query =
+      from(p in Post,
+        inner_lateral_join: c in Comment,
+        on: c.post_id == p.id,
+        select: {p.title, c.body}
+      )
+
+    assert_raise Ecto.QueryError,
+                 ~r/only supports :inner, :left, :right, :full, and :cross joins/,
+                 fn ->
+                   TestRepo.all(query)
+                 end
   end
 
   test "delete_all/2 with a join still raises a clear, documented error (ALTER TABLE ... DELETE has no join support)" do

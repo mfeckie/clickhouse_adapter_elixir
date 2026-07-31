@@ -7,11 +7,10 @@ defmodule Ecto.Adapters.ClickHouse.Expression do
 
   ## Joins
 
-  Only `:inner` and `:left` joins with an explicit `ON` condition are
-  supported -- the shape `join/4,5` and association-based
-  `join: assoc(...)` queries produce. `:right`/`:full`/`:cross` quals,
-  ClickHouse-specific ASOF/semi/anti/lateral joins, and `hints:` all raise
-  rather than being silently mishandled.
+  `:inner`, `:left`, `:right`, `:full`, and `:cross` are supported --
+  everything `join/4,5` and association-based `join: assoc(...)` queries
+  can produce, other than ClickHouse-specific ASOF/semi/anti/lateral joins
+  and `hints:`, which raise rather than being silently mishandled.
 
   Unlike Postgres/MySQL, a plain ClickHouse `LEFT JOIN` fills an unmatched
   right side with each column's type default (`""` for `String`, `0` for
@@ -66,25 +65,26 @@ defmodule Ecto.Adapters.ClickHouse.Expression do
     [" FROM ", from_sql, " AS ", name]
   end
 
-  ## `JOIN` -- only `INNER JOIN`/`LEFT JOIN` on an explicit `ON` condition
-  ## are supported (the common case for `Ecto.Query`'s `join/4,5` and
-  ## association-based `join: assoc(...)` queries). ClickHouse's ANSI-style
-  ## `INNER`/`LEFT JOIN ... ON ...` needs no `ALL`/`ANY` strictness
-  ## qualifier for a plain equality `ON` condition against the pinned
+  ## `JOIN` -- `INNER`/`LEFT`/`RIGHT`/`FULL`/`CROSS JOIN` on an explicit
+  ## `ON` condition are supported (the common case for `Ecto.Query`'s
+  ## `join/4,5` and association-based `join: assoc(...)` queries).
+  ## ClickHouse's ANSI-style joins need no `ALL`/`ANY` strictness qualifier
+  ## for a plain equality `ON` condition against the pinned
   ## `clickhouse/clickhouse-server:26.7` image used by this repo's
   ## `docker-compose.yml` -- ClickHouse defaults to `ALL` semantics (every
   ## matching row pairing, standard SQL join behaviour) unless a stricter
   ## `join_default_strictness` setting or an explicit `ANY`/`ASOF`/`SEMI`
   ## qualifier says otherwise, so the generated SQL stays exactly the
   ## standard-SQL shape other Ecto adapters (Postgres, MyXQL) produce
-  ## instead of ClickHouse-specific syntax.
+  ## instead of ClickHouse-specific syntax. `CROSS JOIN` never gets an `ON`
+  ## clause, matching every other Ecto SQL adapter -- see `join_on/4`.
   ##
   ## Explicitly out of scope (raise instead of silently mishandling):
   ##
-  ##   * `:right`/`:full`/`:cross` -- and any ClickHouse-specific ASOF/semi/
-  ##     anti/lateral/array join, which Ecto surfaces via `qual:` values this
-  ##     adapter doesn't recognize or via `hints:` -- can be added later if
-  ##     needed, but nothing here maps a `qual` to them today.
+  ##   * Any ClickHouse-specific ASOF/semi/anti/lateral/array join, which
+  ##     Ecto surfaces via `qual:` values this adapter doesn't recognize --
+  ##     can be added later if needed, but nothing here maps a `qual` to
+  ##     them today.
   ##   * `hints:` (Ecto's `join/5` `hints:` option) -- there is no
   ##     ClickHouse-specific hint support (e.g. `ANY`/`ASOF` strictness,
   ##     join algorithm hints) implemented, so any join with hints raises
@@ -118,21 +118,33 @@ defmodule Ecto.Adapters.ClickHouse.Expression do
       join_qual(qual, query),
       source_sql,
       " AS ",
-      name,
-      " ON ",
-      expr(on_expr, sources, query)
+      name
+      | join_on(qual, on_expr, sources, query)
     ]
   end
 
+  # CROSS JOIN takes no ON clause -- Ecto still gives every join an `on:`
+  # QueryExpr, defaulting to the literal `true` when the caller didn't
+  # write one, so drop it here rather than emit "CROSS JOIN t AS a ON true"
+  # (harmless on ClickHouse, but not what a plain `join(:cross, ...)` with
+  # no `on:` should produce). A caller who *does* write a real `on:`
+  # condition on a cross join still gets it rendered, same as every other
+  # qualifier.
+  defp join_on(:cross, true, _sources, _query), do: []
+  defp join_on(_qual, on_expr, sources, query), do: [" ON ", expr(on_expr, sources, query)]
+
   defp join_qual(:inner, _query), do: " INNER JOIN "
   defp join_qual(:left, _query), do: " LEFT JOIN "
+  defp join_qual(:right, _query), do: " RIGHT JOIN "
+  defp join_qual(:full, _query), do: " FULL JOIN "
+  defp join_qual(:cross, _query), do: " CROSS JOIN "
 
   defp join_qual(qual, query) do
     Naming.error!(
       query,
-      "the ClickHouse adapter only supports :inner and :left joins on an explicit ON " <>
-        "condition (got #{inspect(qual)}) -- :right/:full/:cross and ClickHouse-specific " <>
-        "ASOF/semi/anti/lateral joins are not implemented"
+      "the ClickHouse adapter only supports :inner, :left, :right, :full, and :cross joins " <>
+        "(got #{inspect(qual)}) -- ClickHouse-specific ASOF/semi/anti/lateral joins are not " <>
+        "implemented"
     )
   end
 
