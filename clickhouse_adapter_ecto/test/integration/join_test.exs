@@ -49,7 +49,11 @@ defmodule Ecto.Adapters.ClickHouse.JoinIntegrationTest do
     schema "join_posts" do
       field(:id, :integer)
       field(:title, :string)
-      has_many(:comments, Ecto.Adapters.ClickHouse.JoinIntegrationTest.Comment, foreign_key: :post_id, references: :id)
+
+      has_many(:comments, Ecto.Adapters.ClickHouse.JoinIntegrationTest.Comment,
+        foreign_key: :post_id,
+        references: :id
+      )
     end
   end
 
@@ -61,15 +65,22 @@ defmodule Ecto.Adapters.ClickHouse.JoinIntegrationTest do
       field(:id, :integer)
       field(:post_id, :integer)
       field(:body, :string)
-      belongs_to(:post, Ecto.Adapters.ClickHouse.JoinIntegrationTest.Post, foreign_key: :post_id, references: :id, define_field: false)
+
+      belongs_to(:post, Ecto.Adapters.ClickHouse.JoinIntegrationTest.Post,
+        foreign_key: :post_id,
+        references: :id,
+        define_field: false
+      )
     end
   end
 
-  setup_clickhouse_tables TestRepo,
-    join_posts: "CREATE TABLE join_posts (id UInt64, title String) ENGINE = MergeTree ORDER BY id",
+  setup_clickhouse_tables(TestRepo,
+    join_posts:
+      "CREATE TABLE join_posts (id UInt64, title String) ENGINE = MergeTree ORDER BY id",
     join_comments:
       "CREATE TABLE join_comments (id UInt64, post_id UInt64, body String) " <>
         "ENGINE = MergeTree ORDER BY id"
+  )
 
   defp seed do
     TestRepo.insert!(%Post{id: 1, title: "first post"})

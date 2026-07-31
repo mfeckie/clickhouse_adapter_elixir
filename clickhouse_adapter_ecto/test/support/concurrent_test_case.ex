@@ -290,5 +290,4 @@ defmodule Ecto.Adapters.ClickHouse.ConcurrentTestCase do
               "with #{inspect(prefix)} so it can be rewritten to CREATE TEMPORARY TABLE -- got: #{inspect(ddl)}"
     end
   end
-
 end

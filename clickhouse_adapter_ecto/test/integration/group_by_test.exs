@@ -69,13 +69,14 @@ defmodule Ecto.Adapters.ClickHouse.GroupByIntegrationTest do
     end
   end
 
-  setup_clickhouse_tables TestRepo,
+  setup_clickhouse_tables(TestRepo,
     group_by_posts:
       "CREATE TABLE group_by_posts (id UInt64, title String, author String, views UInt64) " <>
         "ENGINE = MergeTree ORDER BY id",
     group_by_comments:
       "CREATE TABLE group_by_comments (id UInt64, post_id UInt64, body String) " <>
         "ENGINE = MergeTree ORDER BY id"
+  )
 
   defp seed do
     TestRepo.insert!(%Post{id: 1, title: "first post", author: "alice", views: 10})

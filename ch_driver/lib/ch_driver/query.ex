@@ -122,7 +122,12 @@ defmodule ChDriver.Query do
     splice(rest, params_rest, ["NULL" | sql_acc], wire_acc)
   end
 
-  defp splice([:placeholder | rest], [{name, type, raw_text, rounds} | params_rest], sql_acc, wire_acc) do
+  defp splice(
+         [:placeholder | rest],
+         [{name, type, raw_text, rounds} | params_rest],
+         sql_acc,
+         wire_acc
+       ) do
     placeholder = ["{", name, ":", type, "}"]
     splice(rest, params_rest, [placeholder | sql_acc], [{name, raw_text, rounds} | wire_acc])
   end

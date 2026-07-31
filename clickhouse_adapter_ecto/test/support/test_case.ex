@@ -146,17 +146,28 @@ defmodule Ecto.Adapters.ClickHouse.TestCase do
     quote bind_quoted: [repo: repo, table_ddls: table_ddls, connect_opts: connect_opts] do
       setup_all do
         Ecto.Adapters.ClickHouse.TestCase.__start_repo__(unquote(repo), unquote(connect_opts))
-        Ecto.Adapters.ClickHouse.TestCase.__create_tables__(unquote(table_ddls), unquote(connect_opts))
+
+        Ecto.Adapters.ClickHouse.TestCase.__create_tables__(
+          unquote(table_ddls),
+          unquote(connect_opts)
+        )
 
         on_exit(fn ->
-          Ecto.Adapters.ClickHouse.TestCase.__drop_tables__(unquote(table_ddls), unquote(connect_opts))
+          Ecto.Adapters.ClickHouse.TestCase.__drop_tables__(
+            unquote(table_ddls),
+            unquote(connect_opts)
+          )
         end)
 
         :ok
       end
 
       setup do
-        Ecto.Adapters.ClickHouse.TestCase.__truncate_tables__(unquote(table_ddls), unquote(connect_opts))
+        Ecto.Adapters.ClickHouse.TestCase.__truncate_tables__(
+          unquote(table_ddls),
+          unquote(connect_opts)
+        )
+
         :ok
       end
     end
