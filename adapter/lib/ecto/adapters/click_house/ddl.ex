@@ -262,6 +262,75 @@ defmodule Ecto.Adapters.ClickHouse.DDL do
   and for quick dev tables, but MergeTree's ordering/partitioning key is a
   real modeling decision for anything performance-sensitive -- pass
   `options:` explicitly once that matters.
+
+  ## `ORDER BY`/`PRIMARY KEY` is not a Postgres-style primary key -- read this before your first migration
+
+  This is the single biggest footgun for anyone coming from Postgres or
+  MySQL, so it's called out on its own here rather than only implied by
+  the `ENGINE`-defaulting paragraph above. Confirmed empirically against a
+  live ClickHouse server (see
+  `test/integration/primary_key_semantics_test.exs`):
+
+    * **`create table(:things) do add :name, :string end`, with no
+      `primary_key: false`, does NOT raise or silently produce a broken
+      column.** `Ecto.Migration` injects its own default `add :id,
+      :bigserial, primary_key: true` column before this module ever sees
+      the command list, exactly like it would for Postgres. This module's
+      `engine_clause/2` already special-cases any `:add` column carrying
+      `primary_key: true`: it becomes part of `ORDER BY`, `:bigserial`
+      maps to `UInt64`, and the column is never wrapped in `Nullable(...)`
+      (see `column_definition!/1`). The resulting `CREATE TABLE ... (id
+      UInt64, name Nullable(String)) ENGINE = MergeTree ORDER BY (id)`
+      is perfectly valid ClickHouse DDL and the migration succeeds.
+    * **What actually breaks is what happens *after* `CREATE TABLE`, at
+      insert time, and it's silent.** `ORDER BY`/`PRIMARY KEY` in
+      ClickHouse is a sparse sorting/indexing key used to skip granules
+      during a scan -- it is never enforced as unique at insert time,
+      and ClickHouse has no server-side autoincrement for `id` to fall
+      back on the way a Postgres `bigserial` sequence would. This adapter
+      doesn't synthesize autogeneration either (no `:on_conflict`/
+      `:returning` support -- see `Ecto.Adapters.ClickHouse.QueryBuilder`).
+      So a schema using Ecto's default `@primary_key {:id, :id,
+      autogenerate: true}` that omits `:id` from an insert -- the normal
+      Postgres pattern of "let the database generate it" -- simply never
+      sends a value for that column at all. ClickHouse fills it with the
+      column type's default, `0` for `UInt64`, not a fresh unique value.
+      Every row inserted this way lands on `id = 0`: **all of them are
+      accepted with no error** (there is no uniqueness constraint to
+      violate), but they become indistinguishable by "primary key" from
+      one another.
+
+  The correct, documented pattern is `primary_key: false` on `table/2`
+  plus an explicit `id` column supplied by the application (a natural
+  key, `Ecto.UUID.generate/0`, `System.unique_integer/1`, etc.) and an
+  explicit `options:` `ORDER BY`/`ENGINE` once the default heuristic
+  above isn't the right sort key for the table:
+
+      create table(:events, primary_key: false, options: "ENGINE = MergeTree ORDER BY id") do
+        add(:id, :uuid, primary_key: true)
+        add(:name, :string)
+        add(:occurred_at, :utc_datetime)
+      end
+
+  paired with a schema that supplies `:id` itself rather than trusting
+  the adapter/database to autogenerate it:
+
+      @primary_key {:id, Ecto.UUID, autogenerate: true}
+      schema "events" do
+        field(:name, :string)
+        field(:occurred_at, :utc_datetime)
+      end
+
+  `Ecto.UUID`'s `autogenerate: true` generates the UUID client-side in
+  Elixir before the insert is ever sent (unlike `:id`/`:bigserial`, whose
+  `autogenerate: true` means "ask the database"), so it round-trips
+  correctly with this adapter today with no adapter-side autogeneration
+  support required. Whichever id strategy is used, remember ClickHouse
+  will not reject a duplicate: deduplication (if wanted at all) has to be
+  handled either at the application level or via a ClickHouse-native
+  mechanism (e.g. `ReplacingMergeTree`, `INSERT ... SELECT ... WHERE NOT
+  EXISTS`), never assumed for free from `ORDER BY`/`PRIMARY KEY` the way
+  it would be from a Postgres `PRIMARY KEY` constraint.
   """
 
   alias Ecto.Adapters.ClickHouse.Naming

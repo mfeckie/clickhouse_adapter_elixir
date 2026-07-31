@@ -65,7 +65,7 @@ defmodule MyApp.Repo.Migrations.CreateEvents do
   use Ecto.Migration
 
   def change do
-    create table(:events, primary_key: false) do
+    create table(:events, primary_key: false, options: "ENGINE = MergeTree ORDER BY id") do
       add :id, :uuid, primary_key: true
       add :name, :string
       add :occurred_at, :utc_datetime
@@ -92,6 +92,35 @@ MyApp.Repo.insert!(%MyApp.Event{name: "signup", occurred_at: DateTime.utc_now()}
 import Ecto.Query
 MyApp.Repo.all(from e in MyApp.Event, where: e.name == "signup", order_by: e.occurred_at)
 ```
+
+### `ORDER BY`/primary keys are not what they are in Postgres/MySQL -- read this first
+
+ClickHouse has no auto-increment and no unique-index enforcement at insert
+time. `ORDER BY` (`MergeTree`'s sorting/indexing key, optionally narrowed by
+a separate `PRIMARY KEY` clause) exists to make scans skip granules
+efficiently -- it is **not** a uniqueness constraint. Duplicate values are
+accepted silently, with no error.
+
+Confirmed empirically against a live ClickHouse server (see
+`test/integration/primary_key_semantics_test.exs`): plain `create
+table(:things) do add :name, :string end`, with no `primary_key: false`,
+does **not** raise or produce a broken column -- `Ecto.Migration` injects
+its default `add :id, :bigserial, primary_key: true`, and this adapter maps
+that straight onto `id UInt64 ... ORDER BY (id)`, which is valid DDL. What
+actually breaks is silent and happens *after* the table exists: with no
+`:on_conflict`/`:returning` support and no server-side autoincrement to
+fall back on, a schema that omits `:id` from an insert (the normal
+"let the database generate it" pattern from Postgres) never sends a value
+for that column at all -- ClickHouse fills it with `UInt64`'s default, `0`,
+for every such row. Every insert still succeeds; none of them are
+distinguishable by "primary key" afterwards.
+
+The pattern shown above -- `primary_key: false` plus an explicit,
+application-supplied id (`Ecto.UUID.generate/0`, a natural key,
+`System.unique_integer/1`, ...) and an explicit `options:` `ENGINE`/`ORDER
+BY` once the table matters for performance -- is the one to use. See the
+"`ORDER BY`/`PRIMARY KEY` is not a Postgres-style primary key" section of
+`Ecto.Adapters.ClickHouse.DDL`'s moduledoc for the full empirical writeup.
 
 ## Installation
 
