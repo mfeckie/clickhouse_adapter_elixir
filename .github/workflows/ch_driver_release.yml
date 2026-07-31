@@ -15,9 +15,13 @@ name: ch_driver release
 # package in the publish chain (ch_driver -> adapter, see RELEASING.md), so
 # it has no upstream Hex dependency to worry about ordering against.
 #
-# SAFETY: this workflow is only ever exercised for real when a maintainer
-# pushes a real ch_driver-v* tag with HEX_API_KEY configured as a repo
-# secret. Neither has been done as part of building this pipeline.
+# NOTE: the build_release job (NIF cross-compile matrix) has published real
+# release assets for ch_driver-v0.1.0. The hex_publish job below hasn't --
+# every real tag push hit the checksum-generation catch-22 the
+# FORCE_COMPILE env var now works around (see RELEASING.md's Publish
+# sequence section), and by the time that fix landed, ch_driver 0.1.0 was
+# already published by hand (mix hex.publish run locally, 2FA-gated). This
+# job's automated path is untested against a real tag push.
 
 on:
   push:
@@ -109,9 +113,9 @@ jobs:
   # see RELEASING.md) so it has no upstream Hex dependency to worry about
   # ordering against.
   #
-  # SAFETY: this job is only ever exercised for real when a maintainer
-  # pushes a real ch_driver-v* tag with HEX_API_KEY configured as a repo
-  # secret. Neither has been done as part of building this pipeline.
+  # NOTE: untested against a real tag push -- see the NOTE at the top of
+  # this file for why (ch_driver 0.1.0 was published by hand before the
+  # FORCE_COMPILE fix below existed).
   hex_publish:
     name: Publish ch_driver to Hex.pm
     needs: build_release

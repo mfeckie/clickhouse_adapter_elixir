@@ -13,9 +13,10 @@ name: clickhouse_adapter_ecto release
 # this can succeed. See RELEASING.md for the full ordering -- this project
 # publishes last.
 #
-# SAFETY: this workflow is only ever exercised for real when a maintainer
-# pushes a real adapter-v* tag with HEX_API_KEY configured as a repo secret.
-# Neither has been done as part of building this pipeline.
+# NOTE: this workflow published clickhouse_adapter_ecto 0.1.0 to Hex for
+# real, end to end, via a real adapter-v0.1.0 tag push with HEX_API_KEY
+# configured -- no manual steps needed (unlike ch_driver's release
+# workflow, see the note in ch_driver_release.yml).
 
 on:
   push:
