@@ -146,7 +146,6 @@ defmodule Ecto.Adapters.ClickHouse.GroupByConcurrentIntegrationTest do
   end
 
   test "each test sees a freshly-shadowed, empty table before seeding (no cross-test leakage)" do
-    import Ecto.Query
     assert [] = TestRepo.all(Post)
     assert [] = TestRepo.all(Comment)
   end

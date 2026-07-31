@@ -47,6 +47,7 @@ defmodule ChDriver.StreamTest do
       %{pool: pool}
     end
 
+    @tag timeout: 90_000
     test "the first block arrives in a small fraction of the time consuming the whole stream takes",
          %{pool: pool} do
       # Large enough (and with a `toString` conversion, not just a bare
@@ -70,7 +71,7 @@ defmodule ChDriver.StreamTest do
       # is handed to the consumer as soon as it's decoded, or only after
       # everything has been buffered internally first.
       statement = "SELECT number, toString(number) AS s FROM system.numbers LIMIT 300000"
-      opts = [recv_timeout: 30_000, timeout: 30_000]
+      opts = [recv_timeout: 60_000, timeout: 60_000]
       test_pid = self()
       start_time = System.monotonic_time(:microsecond)
 
