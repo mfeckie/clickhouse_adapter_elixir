@@ -54,4 +54,16 @@ defmodule ChDriver do
       {:error, _} = error -> error
     end
   end
+
+  @doc """
+  Same as `query/4`, but returns the `%ChDriver.Result{}` directly on success
+  and raises the underlying error instead of returning `{:error, reason}`.
+  """
+  @spec query!(DBConnection.conn(), binary, list, keyword) :: ChDriver.Result.t()
+  def query!(conn, statement, params \\ [], opts \\ []) do
+    case query(conn, statement, params, opts) do
+      {:ok, result} -> result
+      {:error, error} -> raise error
+    end
+  end
 end

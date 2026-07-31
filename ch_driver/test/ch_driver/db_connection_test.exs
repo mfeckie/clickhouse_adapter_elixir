@@ -60,6 +60,28 @@ defmodule ChDriver.DBConnectionTest do
     end
   end
 
+  describe "query!/2,3,4 against a live ClickHouse server" do
+    setup do
+      {:ok, pool} = ChDriver.start_link(pool_size: 2)
+      %{pool: pool}
+    end
+
+    test "returns the %Result{} directly on success", %{pool: pool} do
+      assert %Result{columns: columns, rows: rows} = ChDriver.query!(pool, "SELECT 1")
+
+      assert columns == [{"1", "UInt8"}]
+      assert rows == [[1]]
+    end
+
+    test "raises the underlying ChDriver.Error (not a wrapped/generic error) on failure", %{
+      pool: pool
+    } do
+      assert_raise ChDriver.Error, fn ->
+        ChDriver.query!(pool, "SELEKT 1")
+      end
+    end
+  end
+
   describe "heavier concurrent load across a bigger pool" do
     test "many more concurrent queries than connections still pair each caller with its own result" do
       {:ok, pool} = ChDriver.start_link(pool_size: 10)
