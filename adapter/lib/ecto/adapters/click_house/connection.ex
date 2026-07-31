@@ -516,6 +516,97 @@ defmodule Ecto.Adapters.ClickHouse.Connection do
   ## about it is trivial enough to justify adapter-level support before a
   ## concrete use case demands it. Use raw SQL via `execute/1` if needed.
   ##
+  ## ## Kafka-engine tables and materialized views (streaming ingestion)
+  ##
+  ## ClickHouse's standard Kafka ingestion pipeline is three separate
+  ## pieces wired together, none of which fit `Ecto.Migration.Table`'s
+  ## column-list DSL:
+  ##
+  ##   1. A target table (an ordinary MergeTree-family table) -- already
+  ##      fully supported by `create table(...)` above.
+  ##   2. A `Kafka`-engine source table (`CREATE TABLE ... ENGINE = Kafka
+  ##      SETTINGS kafka_broker_list = ..., kafka_topic_list = ...,
+  ##      kafka_group_name = ..., kafka_format = ...`), whose "columns" are
+  ##      the parsed message fields plus virtual columns (`_topic`,
+  ##      `_partition`, `_offset`, `_timestamp`, `_headers.name`/
+  ##      `_headers.value`) that ClickHouse injects and that no
+  ##      `Ecto.Migration.Table` column list could express anyway.
+  ##   3. A materialized view (`CREATE MATERIALIZED VIEW mv_name TO
+  ##      target_table AS SELECT ... FROM kafka_table`) -- semantically a
+  ##      standing INSERT trigger that fires once per Kafka poll batch, not
+  ##      an on-demand-refreshed view.
+  ##
+  ## This adapter does not add a dedicated migration DSL for any of the
+  ## three. `execute_ddl/1`'s `is_binary/1` clause already passes raw SQL
+  ## strings through verbatim, which is the same mechanism this module
+  ## already relies on for `MODIFY ORDER BY`, data-skipping indices, and
+  ## projections above -- Kafka table DDL and a view's `AS SELECT ...`
+  ## body are no less arbitrary than those, so introducing adapter-level
+  ## sugar here would just be a second, narrower way to spell `execute/1`
+  ## with none of its generality. Write all three pieces as raw SQL in a
+  ## migration's `up/0`:
+  ##
+  ##     execute("""
+  ##     CREATE TABLE events (id UInt64, payload String)
+  ##     ENGINE = MergeTree ORDER BY id
+  ##     """)
+  ##
+  ##     execute("""
+  ##     CREATE TABLE events_queue (id UInt64, payload String)
+  ##     ENGINE = Kafka
+  ##     SETTINGS kafka_broker_list = 'kafka:9092',
+  ##              kafka_topic_list = 'events',
+  ##              kafka_group_name = 'events_consumer',
+  ##              kafka_format = 'JSONEachRow'
+  ##     """)
+  ##
+  ##     execute("""
+  ##     CREATE MATERIALIZED VIEW events_mv TO events AS
+  ##     SELECT id, payload FROM events_queue
+  ##     """)
+  ##
+  ## Only the explicit `CREATE MATERIALIZED VIEW ... TO target_table AS
+  ## SELECT ...` form is supported/documented; the implicit-target-table
+  ## form (`CREATE MATERIALIZED VIEW ... ENGINE = ... AS SELECT ...`,
+  ## where ClickHouse creates and owns a hidden backing table) is out of
+  ## scope. The hidden table has no name a migration's `down/0` can address
+  ## directly (ClickHouse mangles it, e.g. `.inner.<uuid>`), which turns a
+  ## clean, explicit teardown into guesswork; requiring `TO target_table`
+  ## keeps every piece a migration creates addressable by the name that
+  ## migration chose.
+  ##
+  ## None of this is safely auto-reversible, so write `up/0` + `down/0`
+  ## explicitly -- never `change/0`. The three pieces must be created and
+  ## torn down in specific orders:
+  ##
+  ##   Creation order (`up/0`): target table, then the Kafka source table,
+  ##   then the materialized view. Only the Kafka table is a hard
+  ##   requirement before the view -- `CREATE MATERIALIZED VIEW ... AS
+  ##   SELECT ... FROM kafka_table` resolves and validates the `FROM`
+  ##   table's columns immediately (`CREATE TABLE ... AS SELECT FROM
+  ##   <nonexistent>` fails with `UNKNOWN_TABLE`), while the `TO
+  ##   target_table` name is not validated until the first insert.
+  ##   Creating the target table first anyway keeps a consistent,
+  ##   unsurprising order and means the view is never live before
+  ##   somewhere to write actually exists.
+  ##
+  ##   Teardown order (`down/0`): materialized view, then the Kafka source
+  ##   table, then the target table -- the reverse of creation, and not
+  ##   interchangeable. `DROP TABLE` on the Kafka source table stops its
+  ##   background consumer immediately and cleanly (the row in
+  ##   `system.kafka_consumers` disappears, no entry lingers in
+  ##   `kafka-consumer-groups.sh --list`) regardless of
+  ##   what else references it, so it never orphans a consumer group by
+  ##   itself. The actual hazard is dropping the *target* table while the
+  ##   materialized view and Kafka table are still live: ClickHouse allows
+  ##   the `DROP TABLE` on the target with no error and no dependency
+  ##   check, but the view is left silently pointing at nothing --
+  ##   ingestion stalls with no exception surfaced anywhere (not in
+  ##   `system.kafka_consumers.exceptions.text`, not in the server log).
+  ##   Dropping the view first removes the trigger before either table
+  ##   underneath it goes away, so there is no window where a poll batch
+  ##   can fire into a broken pipeline.
+  ##
   ## Every table this generates DDL for needs an `ENGINE`. If the migration
   ## author passes `options: "ENGINE = ... "` (via `table(:foo, options:
   ## "ENGINE = MergeTree ORDER BY id")`) that raw string is used verbatim;
