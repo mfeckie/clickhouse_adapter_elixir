@@ -1,12 +1,16 @@
 defmodule ChDriver.Connection do
   @moduledoc """
-  Socket-level connection setup for ClickHouse's native TCP protocol.
+  Socket-level connection setup and query execution for ClickHouse's
+  native TCP protocol.
 
-  This module only handles opening the TCP socket and performing the
-  initial Hello handshake (ClientHello sent, ServerHello parsed). It does
-  not implement Query/Data packet handling -- see `ChDriver.Protocol` for
-  the Hello packet encode/decode and a later driver layer for query
-  execution.
+  `connect/1` opens the TCP socket and performs the initial Hello
+  handshake (ClientHello sent, ServerHello parsed). `query/3` runs a
+  query to completion and collects the full result; `start_stream/3` +
+  `stream_fetch/2` + `cancel_stream/2` provide the block-at-a-time
+  streaming API `ChDriver.DBConnection` drives for `ChDriver.stream/2,3,4`.
+  `ping/1` sends a bare Ping/Pong round-trip. Packet encode/decode itself
+  lives in `ChDriver.Protocol`; this module owns socket I/O, buffering,
+  and packet-loop dispatch on top of it.
   """
 
   alias ChDriver.Protocol
@@ -53,17 +57,6 @@ defmodule ChDriver.Connection do
       directions of block traffic are affected. The only unsupported value
       besides these two raises `ArgumentError` rather than silently falling
       back to uncompressed.
-
-      KNOWN LIMITATION (tracked as `clickhouse_adapter_elixir-g8o`): decoding
-      a real (larger than ~64-byte) compressed Data block currently fails
-      with `{:error, :checksum_mismatch}` because `ch_codec`'s `cityhash128/1`
-      NIF computes CityHash v1.0.3 instead of the v1.0.2 variant ClickHouse
-      actually uses on the wire -- a bug in a dependency, not in this
-      negotiation logic (verified: LZ4 compress/decompress themselves are
-      unaffected). Tiny results (e.g. `SELECT 1`) happen to round-trip
-      anyway, since the two CityHash versions agree below that size. Do not
-      enable `:compression` for anything beyond trivial result sets until
-      g8o is fixed.
 
   Returns `{:ok, %{socket: socket, server_info: %ChDriver.Protocol.ServerHello{}, compression: :none | :lz4}}`
   on success, or `{:error, reason}` on failure. The caller owns the

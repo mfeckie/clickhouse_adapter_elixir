@@ -10,10 +10,8 @@ defmodule ChDriver.Query do
   `DBConnection.Query.parse/2` (see the `defimpl` below) lexes `statement`
   for `?` placeholders exactly once -- the result is cached by
   `DBConnection`/`Ecto.Adapters.SQL`'s own query cache across repeated
-  executions of the same prepared query, so this quote-aware scan (which
-  used to happen on every single execute, see
-  `Ecto.Adapters.ClickHouse.Connection`'s old `bind_params/2`) now happens
-  once per distinct query shape.
+  executions of the same prepared query, so this quote-aware scan happens
+  once per distinct query shape rather than on every execute.
 
   ## Why `param_types` can't be baked in at parse time
 
@@ -54,14 +52,11 @@ defmodule ChDriver.Query do
         }
 
   @doc false
-  # The one-time, quote-aware `?`-placeholder lexer, moved here (and
-  # otherwise unchanged) from
-  # `Ecto.Adapters.ClickHouse.Connection.scan_placeholders/1..3` /
-  # `consume_quoted/3`. Returns an alternating list of text chunks
-  # (binaries) and `:placeholder` markers, tracking single/double-quoted
-  # regions so a literal `?` inside a string literal or quoted identifier
-  # (e.g. a raw fragment's own text, or a `LIKE` pattern written directly
-  # in the query) is never mistaken for a bind position.
+  # The one-time, quote-aware `?`-placeholder lexer. Returns an alternating
+  # list of text chunks (binaries) and `:placeholder` markers, tracking
+  # single/double-quoted regions so a literal `?` inside a string literal or
+  # quoted identifier (e.g. a raw fragment's own text, or a `LIKE` pattern
+  # written directly in the query) is never mistaken for a bind position.
   @spec lex_placeholders(binary) :: [segment]
   def lex_placeholders(sql) when is_binary(sql), do: lex_placeholders(sql, [], <<>>)
 

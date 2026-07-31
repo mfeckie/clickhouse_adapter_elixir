@@ -9,11 +9,11 @@ defmodule ChDriver do
       {:ok, %ChDriver.Result{columns: columns, rows: rows}} =
         ChDriver.query(pool, "SELECT number FROM system.numbers LIMIT 5")
 
-  This is the intended integration point for higher layers (e.g. a future
-  `Ecto.Adapters.SQL.Connection` implementation) -- `start_link/1` and
-  `query/2,3` are the whole public surface; everything else
-  (`ChDriver.DBConnection`, `ChDriver.Connection`, `ChDriver.Protocol`) is
-  wiring underneath it.
+  This is the intended integration point for higher layers (e.g.
+  `Ecto.Adapters.ClickHouse`) -- `start_link/1`, `query/2,3,4`,
+  `query!/2,3,4`, and `stream/2,3,4` are the whole public surface;
+  everything else (`ChDriver.DBConnection`, `ChDriver.Connection`,
+  `ChDriver.Protocol`) is wiring underneath it.
 
   All `ChDriver.Connection.connect/1` options (`:hostname`, `:port`,
   `:database`, `:username`, `:password`, `:connect_timeout`,
