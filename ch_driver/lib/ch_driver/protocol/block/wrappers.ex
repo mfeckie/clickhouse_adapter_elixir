@@ -1,10 +1,10 @@
 defmodule ChDriver.Protocol.Block.Wrappers do
   @moduledoc """
   Decoders for ClickHouse's wrapper/compound column types, dispatched from
-  `ChDriver.Protocol.NativeBlock.decode_column_data/3`: `Nullable(T)`,
+  `ChDriver.Protocol.NativeBlock`'s `decode_column_data/3`: `Nullable(T)`,
   `Array(T)`, `Map(K, V)`, `LowCardinality(T)`, and `Decimal(P, S)`.
   `Nullable`/`Array`/`Map`/`LowCardinality` each recurse back into
-  `ChDriver.Protocol.NativeBlock.decode_column_data/3` for their inner
+  `ChDriver.Protocol.NativeBlock`'s `decode_column_data/3` for their inner
   type(s) -- this mutual recursion across the module boundary is what
   makes arbitrarily nested types like `Array(Nullable(String))` or
   `Map(String, Array(UInt32))` work for free; see

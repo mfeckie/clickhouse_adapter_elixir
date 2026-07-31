@@ -56,7 +56,7 @@ defmodule ChDriver.Types.Registry do
   decodes to the raw `N`-byte binary verbatim, trailing NULs included,
   via `decode_fixed_width/4` with an identity unpack function (see
   `ChDriver.Types.parse_fixed_string/1`'s call site in
-  `ChDriver.Protocol.NativeBlock.decode_column_data/3`).
+  `ChDriver.Protocol.NativeBlock`'s `decode_column_data/3`).
   """
 
   alias ChDriver.Protocol.Varint

@@ -10,7 +10,7 @@ defmodule ChDriver.DBConnection do
   already lexed once by `DBConnection.Query.parse/2`) and `encoded_params`
   (this call's values, already run through `DBConnection.Query.encode/3`),
   splices them together into the final wire statement + `{name, raw_text,
-  escape_rounds}` params via `ChDriver.Query.to_wire/2`, calls
+  escape_rounds}` params via `ChDriver.Query`'s `to_wire/2`, calls
   `ChDriver.Connection.query/2,3`, and translates its
   `{:ok, %{columns:, rows:}}` / `{:error, term}` shape into DBConnection's
   `{:ok, query, result, state}` / `{:error | :disconnect, exception, state}`

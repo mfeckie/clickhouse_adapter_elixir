@@ -52,6 +52,17 @@ defmodule ChDriver.Protocol do
               default_database: "",
               user: "default",
               password: ""
+
+    @type t :: %__MODULE__{
+            client_name: String.t(),
+            version_major: non_neg_integer,
+            version_minor: non_neg_integer,
+            version_patch: non_neg_integer,
+            revision: non_neg_integer,
+            default_database: String.t(),
+            user: String.t(),
+            password: String.t()
+          }
   end
 
   defmodule ServerHello do
@@ -63,6 +74,16 @@ defmodule ChDriver.Protocol do
               timezone: nil,
               display_name: nil,
               version_patch: nil
+
+    @type t :: %__MODULE__{
+            name: String.t() | nil,
+            version_major: non_neg_integer | nil,
+            version_minor: non_neg_integer | nil,
+            revision: non_neg_integer | nil,
+            timezone: String.t() | nil,
+            display_name: String.t() | nil,
+            version_patch: non_neg_integer | nil
+          }
   end
 
   @doc """

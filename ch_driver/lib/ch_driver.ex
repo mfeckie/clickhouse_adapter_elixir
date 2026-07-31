@@ -50,8 +50,8 @@ defmodule ChDriver do
 
   `params` is a list of `{name, raw_text}` or `{name, raw_text, escape_rounds}`
   tuples binding `statement`'s placeholders -- see
-  `ChDriver.Protocol.param_text/1`/`escape_rounds/1` and `ChDriver.Query`'s
-  moduledoc.
+  `ChDriver.Params.text/1`/`ChDriver.Params.escape_rounds/1` and
+  `ChDriver.Query`'s moduledoc.
   """
   @spec query(DBConnection.conn(), binary, list, keyword) ::
           {:ok, ChDriver.Result.t()} | {:error, Exception.t()}

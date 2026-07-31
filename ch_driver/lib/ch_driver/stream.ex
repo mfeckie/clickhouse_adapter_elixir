@@ -16,7 +16,7 @@ defmodule ChDriver.Stream do
   struct, never a bare SQL string, so there's no separate "prepare first"
   path to distinguish the way `Postgrex.Stream`'s `Enumerable` impl does
   for its two possible `query` shapes (see `postgrex/lib/postgrex/stream.ex`).
-  `DBConnection.reduce/3` drives `ChDriver.DBConnection.handle_declare/4`,
+  `DBConnection.reduce/3` drives `ChDriver.DBConnection`'s `handle_declare/4`,
   `handle_fetch/4`, and `handle_deallocate/4` (see their docs) via
   `Stream.resource/3` under the hood, so cleanup (`handle_deallocate/4`)
   runs whether the consumer takes everything (`Enum.to_list/1`) or stops

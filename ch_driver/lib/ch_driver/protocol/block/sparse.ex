@@ -7,7 +7,7 @@ defmodule ChDriver.Protocol.Block.Sparse do
   `ratio_of_defaults_for_sparse_serialization`, default `0.9`), regardless
   of whether the user asked for it. On the wire this shows up as the
   `has_custom_serialization` byte (see
-  `ChDriver.Protocol.NativeBlock.decode_serialization_kind/3`) being `1`,
+  `ChDriver.Protocol.NativeBlock`'s `decode_serialization_kind/3`) being `1`,
   followed by one more `UInt8` "serialization kind" byte (per ClickHouse's
   `ISerialization::Kind` enum in `ISerialization.h` and
   `SerializationInfo::deserializeFromKindsBinary` in
@@ -68,7 +68,7 @@ defmodule ChDriver.Protocol.Block.Sparse do
   `SparseOffsets` varint stream giving the position of every non-default
   row, followed by a `SparseElements` stream of exactly that many
   densely-packed values of `inner_type`, decoded via
-  `ChDriver.Protocol.NativeBlock.decode_column_data/3` like any other
+  `ChDriver.Protocol.NativeBlock`'s `decode_column_data/3` like any other
   wrapper type.
   """
   def decode_sparse(inner_type, num_rows, binary) do

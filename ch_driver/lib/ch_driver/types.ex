@@ -25,11 +25,11 @@ defmodule ChDriver.Types do
     * `FixedString(N)` -- decoded via the generic
       `ChDriver.Types.Registry.decode_fixed_width/4` with an identity
       unpack function (see the call site in
-      `ChDriver.Protocol.NativeBlock.decode_column_data/3`).
+      `ChDriver.Protocol.NativeBlock`'s `decode_column_data/3`).
 
   `Tuple(...)` is not supported in its own right -- only as `Map(K, V)`'s
   implicit internal representation, not as a directly-selectable column
-  type (see `ChDriver.Protocol.Block.Wrappers.decode_map/4`'s moduledoc for
+  type (see `ChDriver.Protocol.Block.Wrappers`'s `decode_map/4` moduledoc for
   why generalizing it is more work than it looks).
   """
 

@@ -32,7 +32,7 @@ defmodule ChDriver.Query do
   quote-aware part) and stores that as `segments`; `encode/3` resolves
   *what* to bind each execution's actual values as (via
   `ChDriver.Params.encode/1`, cheap and per-value); and
-  `ChDriver.DBConnection.handle_execute/4` splices the two together into
+  `ChDriver.DBConnection`'s `handle_execute/4` splices the two together into
   the final wire statement + wire params for this specific call. This
   keeps the expensive one-time lexing cached while still allowing a
   per-execution decision between a typed placeholder and an inlined
@@ -192,12 +192,12 @@ defimpl DBConnection.Query, for: ChDriver.Query do
   (`postgrex/lib/postgrex/query.ex:66-79`).
 
   Each element of the returned list is either `{name, :null}` (the value
-  was `nil`; `ChDriver.Query.to_wire/2` inlines this as a literal `NULL`
-  rather than a typed placeholder -- see `ChDriver.Params`'s moduledoc for
-  why nil can't be bound as a typed parameter) or
+  was `nil`; `to_wire/2` (this module, below) inlines this as a literal
+  `NULL` rather than a typed placeholder -- see `ChDriver.Params`'s
+  moduledoc for why nil can't be bound as a typed parameter) or
   `{name, type, raw_text, escape_rounds}` from `ChDriver.Params.encode/1`.
-  `ChDriver.DBConnection.handle_execute/4` is what turns this into the
-  final wire statement/params via `ChDriver.Query.to_wire/2`.
+  `ChDriver.DBConnection`'s `handle_execute/4` is what turns this into the
+  final wire statement/params via `to_wire/2` (this module, below).
   """
   def encode(%Query{param_names: nil} = query, _params, _opts) do
     raise ArgumentError, "query #{inspect(query)} has not been prepared"
@@ -221,7 +221,7 @@ defimpl DBConnection.Query, for: ChDriver.Query do
 
   @doc """
   Builds a `%ChDriver.Result{}` from the `{columns, rows}` map
-  `ChDriver.DBConnection.handle_execute/4` returns, honoring
+  `ChDriver.DBConnection`'s `handle_execute/4` returns, honoring
   `opts[:decode_mapper]` (a function applied to each decoded row) exactly
   like `Postgrex.Query.decode/3` does.
   """

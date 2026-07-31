@@ -181,8 +181,8 @@ defmodule ChDriver.Connection do
   then loops reading and dispatching response packets. `opts` is forwarded
   to `ChDriver.Protocol.encode_query/2` unchanged, so a `:params` list of
   `{name, raw_text}` or `{name, raw_text, escape_rounds}` tuples binds that
-  query's `{name:Type}` placeholders (see `ChDriver.Protocol.param_text/1`
-  and `ChDriver.Protocol.escape_rounds/1`).
+  query's `{name:Type}` placeholders (see `ChDriver.Params.text/1`
+  and `ChDriver.Params.escape_rounds/1`).
 
     * `Data`/`ProfileEvents` packets are accumulated (columns come from the
       first Data packet seen with a non-empty column list -- ClickHouse
@@ -319,7 +319,7 @@ defmodule ChDriver.Connection do
   but with the result's column names/types) -- and returns a small,
   stateful "stream" map that `stream_fetch/2` resumes from on demand.
 
-  This is what `ChDriver.DBConnection.handle_declare/4` calls: the
+  This is what `ChDriver.DBConnection`'s `handle_declare/4` calls: the
   returned map (`%{columns:, buffer:, done:, recv_timeout:,
   max_buffer_size:, compression:, pending:}`) is exactly the "cursor"
   state that needs to persist across `handle_fetch/4` calls -- the
@@ -458,7 +458,7 @@ defmodule ChDriver.Connection do
 
   @doc """
   Cleans up a stream previously started by `start_stream/3`, for
-  `ChDriver.DBConnection.handle_deallocate/4`.
+  `ChDriver.DBConnection`'s `handle_deallocate/4`.
 
   If the stream already reached `:end_of_stream` (`stream.done` is
   `true` -- the caller consumed every block via `stream_fetch/2`), there
