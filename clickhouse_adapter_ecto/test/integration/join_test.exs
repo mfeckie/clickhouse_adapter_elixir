@@ -7,15 +7,18 @@ defmodule Ecto.Adapters.ClickHouse.JoinIntegrationTest do
   `:inner`, `:left`, `:right`, `:full`, and `:cross` joins against an
   explicit `ON` condition are supported -- the common case for
   `Ecto.Query`'s `join/4,5` and association-based (`join: assoc(...)`,
-  `has_many`/`belongs_to`) queries. Any ClickHouse-specific ASOF/semi/
-  anti/lateral/array join is explicitly out of scope and raises a clear
-  `Ecto.QueryError` instead of being silently mishandled -- see
+  `has_many`/`belongs_to`) queries. Any ClickHouse-specific ASOF/semi/anti/
+  array join is explicitly out of scope (not implemented yet) and raises a
+  clear `Ecto.QueryError` instead of being silently mishandled -- see
   `Ecto.Adapters.ClickHouse.Expression`'s moduledoc-adjacent comment above
   `join/2` for the full rationale (in short: a plain ClickHouse
   `INNER`/`LEFT JOIN ... ON ...` needs no `ALL`/`ANY` strictness qualifier
   for a simple equality condition against this repo's pinned
   `clickhouse/clickhouse-server:26.7` image, so the generated SQL stays
-  the same standard-SQL shape other Ecto adapters produce).
+  the same standard-SQL shape other Ecto adapters produce). LATERAL joins
+  (`:inner_lateral`/`:left_lateral`/`:cross_lateral`) also raise, but for a
+  different, permanent reason: ClickHouse has no LATERAL JOIN equivalent at
+  all, so there is no SQL this adapter could ever generate for them.
 
   `delete_all/2` with joins remains unsupported (ClickHouse's
   `ALTER TABLE ... DELETE` mutation has no join support) -- see the
@@ -225,21 +228,34 @@ defmodule Ecto.Adapters.ClickHouse.JoinIntegrationTest do
     assert length(TestRepo.all(query)) == 6
   end
 
-  test "an unsupported join qualifier (:inner_lateral) raises a clear Ecto.QueryError instead of silently mishandling it" do
+  test "LATERAL join qualifiers (:inner_lateral, :left_lateral, :cross_lateral) raise a clear Ecto.QueryError naming ClickHouse's lack of LATERAL JOIN support" do
     import Ecto.Query
 
-    query =
+    lateral_message = ~r/does not support LATERAL joins.*ClickHouse\/ClickHouse#29504/s
+
+    inner_lateral_query =
       from(p in Post,
         inner_lateral_join: c in Comment,
         on: c.post_id == p.id,
         select: {p.title, c.body}
       )
 
-    assert_raise Ecto.QueryError,
-                 ~r/only supports :inner, :left, :right, :full, and :cross joins/,
-                 fn ->
-                   TestRepo.all(query)
-                 end
+    left_lateral_query =
+      from(p in Post,
+        left_lateral_join: c in Comment,
+        on: c.post_id == p.id,
+        select: {p.title, c.body}
+      )
+
+    cross_lateral_query =
+      from(p in Post,
+        cross_lateral_join: c in Comment,
+        select: {p.title, c.body}
+      )
+
+    assert_raise Ecto.QueryError, lateral_message, fn -> TestRepo.all(inner_lateral_query) end
+    assert_raise Ecto.QueryError, lateral_message, fn -> TestRepo.all(left_lateral_query) end
+    assert_raise Ecto.QueryError, lateral_message, fn -> TestRepo.all(cross_lateral_query) end
   end
 
   test "delete_all/2 with a join still raises a clear, documented error (ALTER TABLE ... DELETE has no join support)" do

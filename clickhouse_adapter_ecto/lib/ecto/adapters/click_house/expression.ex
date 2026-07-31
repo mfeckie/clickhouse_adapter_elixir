@@ -9,8 +9,12 @@ defmodule Ecto.Adapters.ClickHouse.Expression do
 
   `:inner`, `:left`, `:right`, `:full`, and `:cross` are supported --
   everything `join/4,5` and association-based `join: assoc(...)` queries
-  can produce, other than ClickHouse-specific ASOF/semi/anti/lateral joins
+  can produce, other than ClickHouse-specific ASOF/semi/anti/array joins
   and `hints:`, which raise rather than being silently mishandled.
+  `:inner_lateral`/`:left_lateral`/`:cross_lateral` (Ecto's `LATERAL JOIN`
+  support) also raise, but for a different reason: ClickHouse has no
+  `LATERAL JOIN` equivalent at all, so there is no query this adapter could
+  ever generate for them, not just one that hasn't been implemented yet.
 
   Unlike Postgres/MySQL, a plain ClickHouse `LEFT JOIN` fills an unmatched
   right side with each column's type default (`""` for `String`, `0` for
@@ -81,10 +85,20 @@ defmodule Ecto.Adapters.ClickHouse.Expression do
   ##
   ## Explicitly out of scope (raise instead of silently mishandling):
   ##
-  ##   * Any ClickHouse-specific ASOF/semi/anti/lateral/array join, which
-  ##     Ecto surfaces via `qual:` values this adapter doesn't recognize --
-  ##     can be added later if needed, but nothing here maps a `qual` to
-  ##     them today.
+  ##   * Any ClickHouse-specific ASOF/semi/anti/array join, which Ecto
+  ##     surfaces via `qual:` values this adapter doesn't recognize -- can be
+  ##     added later if needed, but nothing here maps a `qual` to them today.
+  ##     ClickHouse *does* support these natively; they're simply not
+  ##     implemented by this adapter yet.
+  ##   * `:inner_lateral`/`:left_lateral`/`:cross_lateral` (Ecto's
+  ##     `inner_lateral_join:`/`left_lateral_join:`/`cross_lateral_join:` and
+  ##     `join(queryable, :inner_lateral | :left_lateral | :cross_lateral,
+  ##     ...)`) -- unlike ASOF/SEMI/ANTI/array above, this isn't a "not
+  ##     implemented yet" gap: ClickHouse has no `LATERAL JOIN` support at
+  ##     all (no correlated-subquery join syntax of any kind), and adding
+  ##     one is an open, unresolved ClickHouse feature request
+  ##     (ClickHouse/ClickHouse#29504). There is no SQL this adapter could
+  ##     ever emit for these quals, so they raise unconditionally.
   ##   * `hints:` (Ecto's `join/5` `hints:` option) -- there is no
   ##     ClickHouse-specific hint support (e.g. `ANY`/`ASOF` strictness,
   ##     join algorithm hints) implemented, so any join with hints raises
@@ -139,11 +153,22 @@ defmodule Ecto.Adapters.ClickHouse.Expression do
   defp join_qual(:full, _query), do: " FULL JOIN "
   defp join_qual(:cross, _query), do: " CROSS JOIN "
 
+  defp join_qual(qual, query) when qual in [:inner_lateral, :left_lateral, :cross_lateral] do
+    Naming.error!(
+      query,
+      "the ClickHouse adapter does not support LATERAL joins (got #{inspect(qual)}) -- " <>
+        "ClickHouse has no LATERAL JOIN equivalent at all (no correlated-subquery join syntax " <>
+        "of any kind), so there is no SQL this adapter could generate for it; this is an open, " <>
+        "unresolved ClickHouse feature request (ClickHouse/ClickHouse#29504), not a gap in " <>
+        "this adapter's implementation"
+    )
+  end
+
   defp join_qual(qual, query) do
     Naming.error!(
       query,
       "the ClickHouse adapter only supports :inner, :left, :right, :full, and :cross joins " <>
-        "(got #{inspect(qual)}) -- ClickHouse-specific ASOF/semi/anti/lateral joins are not " <>
+        "(got #{inspect(qual)}) -- ClickHouse-specific ASOF/semi/anti/array joins are not " <>
         "implemented"
     )
   end
