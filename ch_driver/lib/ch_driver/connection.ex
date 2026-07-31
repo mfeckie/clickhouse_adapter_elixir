@@ -125,7 +125,11 @@ defmodule ChDriver.Connection do
 
   Sends a Query packet followed by an empty Data packet (required even for
   plain SELECTs -- see `ChDriver.Protocol.encode_empty_data_packet/0`),
-  then loops reading and dispatching response packets:
+  then loops reading and dispatching response packets. `opts` is forwarded
+  to `ChDriver.Protocol.encode_query/2` unchanged, so a `:params` list of
+  `{name, raw_text}` or `{name, raw_text, escape_rounds}` tuples binds that
+  query's `{name:Type}` placeholders (see `ChDriver.Protocol.param_text/1`
+  and `ChDriver.Protocol.escape_rounds/1`).
 
     * `Data`/`ProfileEvents` packets are accumulated (columns come from the
       first Data packet seen with a non-empty column list -- ClickHouse

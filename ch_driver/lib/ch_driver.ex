@@ -36,13 +36,15 @@ defmodule ChDriver do
   end
 
   @doc """
-  Runs `statement` (a raw SQL string) against `conn` (a pool started by
+  Runs `statement` (a raw SQL string, optionally containing ClickHouse
+  `{name:Type}` parameter placeholders) against `conn` (a pool started by
   `start_link/1`, or any `DBConnection`-compatible connection reference)
   and returns `{:ok, %ChDriver.Result{}}` or `{:error, reason}`.
 
-  `params` is currently unused (see `ChDriver.Query`'s moduledoc) and
-  accepted only so callers can already write against the eventual
-  parameterized-query API.
+  `params` is a list of `{name, raw_text}` or `{name, raw_text, escape_rounds}`
+  tuples binding `statement`'s placeholders -- see
+  `ChDriver.Protocol.param_text/1`/`escape_rounds/1` and `ChDriver.Query`'s
+  moduledoc.
   """
   @spec query(DBConnection.conn(), binary, list, keyword) ::
           {:ok, ChDriver.Result.t()} | {:error, Exception.t()}

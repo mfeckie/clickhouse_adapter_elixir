@@ -2,27 +2,23 @@ defmodule Ecto.Adapters.ClickHouse.Connection do
   @moduledoc """
   Implements `Ecto.Adapters.SQL.Connection` on top of `ChDriver`.
 
-  ## The parameter problem
+  ## Parameter binding
 
-  `ChDriver`'s native-protocol driver does not implement query
-  parameterization yet (see `ChDriver.Query`'s moduledoc) -- params passed to
-  `DBConnection.execute/3,4` are accepted but silently ignored by
-  `ChDriver.DBConnection.handle_execute/4`. Every other `Ecto.Adapters.SQL.Connection`
-  implementation (Postgrex, MyXQL, Tds) relies on the underlying driver to
-  bind `?`/`$1`-style placeholders server-side or client-side at execute
-  time; we can't do that here.
+  SQL is generated the normal Ecto way with `?` placeholders (see
+  `expr/3`, `insert/8`), matching every other `Ecto.Adapters.SQL.Connection`
+  implementation. Rather than inlining the corresponding runtime values as
+  SQL literals, `bind_params/2` rewrites each `?` into a ClickHouse native
+  `{pN:Type}` parameter placeholder and sends the actual value alongside
+  the query through `ChDriver`'s query-parameters wire mechanism (see
+  `ChDriver.Protocol.encode_query/2`) -- the value's bytes never pass
+  through the SQL text at all, so there's nothing to escape and no `?`
+  inside a string literal or raw fragment can be mistaken for a bind
+  placeholder (`bind_params/2` tracks quoted regions while scanning).
 
-  Instead, SQL is generated the normal Ecto way with `?` placeholders (see
-  `expr/3`, `insert/8`), and this module inlines the corresponding params as
-  ClickHouse SQL literals into the final statement text *before* handing it
-  to `ChDriver` -- see `inline_params/2` and `encode_literal/1`. This is
-  sufficient for the integer/float/string/boolean/nil literal encoding this
-  phase targets; it is not SQL-injection-safe beyond correct literal
-  escaping, and it naively assumes every literal `?` in the templated SQL is
-  a placeholder (a `?` appearing inside a raw fragment string would
-  misalign the substitution) -- both acceptable limitations for this first
-  pass, revisit once/if native-protocol parameter binding lands in
-  `ChDriver`.
+  ClickHouse's parameter mechanism has no type-independent way to express
+  NULL (see `ChDriver.Protocol.param_text/1`), so a `nil` value is the one
+  exception: it's inlined directly as the literal `NULL` token, which
+  carries no injection risk since it's a fixed constant.
   """
 
   @behaviour Ecto.Adapters.SQL.Connection
@@ -42,9 +38,9 @@ defmodule Ecto.Adapters.ClickHouse.Connection do
   @impl true
   def prepare_execute(conn, _name, sql, params, opts) do
     statement = IO.iodata_to_binary(sql)
-    final_sql = inline_params(statement, params)
+    {final_sql, wire_params} = bind_params(statement, params)
 
-    case ChDriver.query(conn, final_sql, [], opts) do
+    case ChDriver.query(conn, final_sql, wire_params, opts) do
       {:ok, result} -> {:ok, %ChDriver.Query{statement: statement}, to_sql_result(result)}
       {:error, _} = error -> error
     end
@@ -52,9 +48,9 @@ defmodule Ecto.Adapters.ClickHouse.Connection do
 
   @impl true
   def execute(conn, %ChDriver.Query{statement: statement}, params, opts) do
-    final_sql = inline_params(statement, params)
+    {final_sql, wire_params} = bind_params(statement, params)
 
-    case ChDriver.query(conn, final_sql, [], opts) do
+    case ChDriver.query(conn, final_sql, wire_params, opts) do
       {:ok, result} -> {:ok, to_sql_result(result)}
       {:error, _} = error -> error
     end
@@ -66,9 +62,9 @@ defmodule Ecto.Adapters.ClickHouse.Connection do
 
   @impl true
   def query(conn, statement, params, opts) do
-    final_sql = inline_params(IO.iodata_to_binary(statement), params)
+    {final_sql, wire_params} = bind_params(IO.iodata_to_binary(statement), params)
 
-    case ChDriver.query(conn, final_sql, [], opts) do
+    case ChDriver.query(conn, final_sql, wire_params, opts) do
       {:ok, result} -> {:ok, to_sql_result(result)}
       {:error, _} = error -> error
     end
@@ -99,99 +95,115 @@ defmodule Ecto.Adapters.ClickHouse.Connection do
     %{columns: Enum.map(columns, fn {name, _type} -> name end), rows: rows, num_rows: num_rows}
   end
 
-  ## Parameter inlining
+  ## Parameter binding
 
   @doc false
-  def inline_params(sql, []), do: sql
+  def bind_params(sql, params) do
+    chunks = scan_placeholders(sql)
+    placeholder_count = Enum.count(chunks, &(&1 == :placeholder))
 
-  def inline_params(sql, params) do
-    parts = String.split(sql, "?")
-    placeholders = length(parts) - 1
-
-    if placeholders != length(params) do
+    if placeholder_count != length(params) do
       raise ArgumentError,
-            "expected #{placeholders} params in statement #{inspect(sql)}, got #{length(params)}"
+            "expected #{placeholder_count} params in statement #{inspect(sql)}, got " <>
+              "#{length(params)}"
     end
 
-    [first | rest] = parts
-
-    rest
-    |> Enum.zip(params)
-    |> Enum.reduce(first, fn {part, param}, acc ->
-      [acc, encode_literal(param), part]
-    end)
-    |> IO.iodata_to_binary()
+    {sql_iodata, wire_params} = do_bind(chunks, params, [], [], 0)
+    {IO.iodata_to_binary(sql_iodata), wire_params}
   end
 
-  defp encode_literal(nil), do: "NULL"
-  defp encode_literal(true), do: "1"
-  defp encode_literal(false), do: "0"
-  defp encode_literal(i) when is_integer(i), do: Integer.to_string(i)
-  defp encode_literal(f) when is_float(f), do: Float.to_string(f)
-  defp encode_literal(%Decimal{} = d), do: Decimal.to_string(d, :normal)
-  # ClickHouse parses a plain 'YYYY-MM-DD[ HH:MM:SS[.ffffff]]' string literal
-  # into Date/DateTime/DateTime64 as needed when it's used in a context that
-  # expects one (e.g. an INSERT VALUES column, or compared against such a
-  # column) -- confirmed live via `Ecto.Migration.SchemaMigration`'s
-  # `timestamps updated_at: false` (a `NaiveDateTime`) actually inserting.
-  defp encode_literal(%NaiveDateTime{} = ndt), do: [?', NaiveDateTime.to_string(ndt), ?']
-
-  # DateTime.to_string/1 appends a "Z" (or an offset) for anything but a
-  # bare-naive value, and ClickHouse's DateTime literal parser rejects that
-  # suffix outright ("Cannot parse string '... Z' as DateTime: syntax error
-  # at position 19") -- confirmed live. Since ClickHouse's plain `DateTime`
-  # has no offset of its own (see `ChDriver.Protocol.NativeBlock`'s
-  # `decode_datetime/1` moduledoc), only a UTC `DateTime` unambiguously maps
-  # onto it; drop to a NaiveDateTime literal for those and reject anything
-  # else rather than silently writing the wrong instant.
-  defp encode_literal(%DateTime{utc_offset: 0, std_offset: 0} = dt) do
-    [?', dt |> DateTime.to_naive() |> NaiveDateTime.to_string(), ?']
+  defp do_bind([], [], sql_acc, wire_acc, _ix) do
+    {Enum.reverse(sql_acc), Enum.reverse(wire_acc)}
   end
 
-  defp encode_literal(%DateTime{} = dt) do
+  defp do_bind([text | rest], params, sql_acc, wire_acc, ix) when is_binary(text) do
+    do_bind(rest, params, [text | sql_acc], wire_acc, ix)
+  end
+
+  defp do_bind([:placeholder | rest], [nil | params_rest], sql_acc, wire_acc, ix) do
+    do_bind(rest, params_rest, ["NULL" | sql_acc], wire_acc, ix + 1)
+  end
+
+  defp do_bind([:placeholder | rest], [value | params_rest], sql_acc, wire_acc, ix) do
+    name = "p#{ix}"
+    placeholder = ["{", name, ":", param_type!(value), "}"]
+    raw_text = ChDriver.Protocol.param_text(value)
+    rounds = ChDriver.Protocol.escape_rounds(value)
+    wire_param = {name, raw_text, rounds}
+    do_bind(rest, params_rest, [placeholder | sql_acc], [wire_param | wire_acc], ix + 1)
+  end
+
+  # Scans `sql` for `?` placeholders, tracking single/double-quoted regions
+  # so a literal `?` inside a string literal or quoted identifier (e.g. a
+  # raw fragment's own text, or a `LIKE` pattern written directly in the
+  # query) is never mistaken for a bind position. Returns an alternating
+  # list of text chunks (binaries) and `:placeholder` markers.
+  defp scan_placeholders(sql) when is_binary(sql), do: scan_placeholders(sql, [], <<>>)
+
+  defp scan_placeholders(<<>>, acc, buf), do: Enum.reverse([buf | acc])
+
+  defp scan_placeholders(<<"?", rest::binary>>, acc, buf) do
+    scan_placeholders(rest, [:placeholder, buf | acc], <<>>)
+  end
+
+  defp scan_placeholders(<<"'", rest::binary>>, acc, buf) do
+    {quoted, rest} = consume_quoted(rest, ?', <<"'">>)
+    scan_placeholders(rest, acc, <<buf::binary, quoted::binary>>)
+  end
+
+  defp scan_placeholders(<<"\"", rest::binary>>, acc, buf) do
+    {quoted, rest} = consume_quoted(rest, ?", <<"\"">>)
+    scan_placeholders(rest, acc, <<buf::binary, quoted::binary>>)
+  end
+
+  defp scan_placeholders(<<byte, rest::binary>>, acc, buf) do
+    scan_placeholders(rest, acc, <<buf::binary, byte>>)
+  end
+
+  # `q` is the terminating quote byte (`?'` or `?"`); backslash-escapes are
+  # honored the same way ClickHouse itself parses them (see `escape_string/1`)
+  # so an escaped quote never ends the region early.
+  defp consume_quoted(<<"\\", c, rest::binary>>, q, acc) do
+    consume_quoted(rest, q, <<acc::binary, "\\", c>>)
+  end
+
+  defp consume_quoted(<<c, rest::binary>>, q, acc) when c == q, do: {<<acc::binary, c>>, rest}
+
+  defp consume_quoted(<<c, rest::binary>>, q, acc) do
+    consume_quoted(rest, q, <<acc::binary, c>>)
+  end
+
+  defp consume_quoted(<<>>, _q, acc), do: {acc, <<>>}
+
+  # Maps an Elixir runtime value to the ClickHouse type name used in its
+  # `{name:Type}` placeholder. There's no clause for `nil` -- `do_bind/5`
+  # inlines it as a literal `NULL` before this is ever called, since no
+  # single declared parameter type parses NULL correctly against every
+  # column type it might be compared against (a `Nullable(String)` NULL
+  # parameter fails to bind against an `Int32` column with "Attempt to
+  # read after eof... while converting '' to Int32").
+  defp param_type!(b) when is_binary(b), do: "String"
+  defp param_type!(i) when is_integer(i), do: "Int64"
+  defp param_type!(f) when is_float(f), do: "Float64"
+  defp param_type!(bool) when is_boolean(bool), do: "UInt8"
+  defp param_type!(%Decimal{}), do: "String"
+  defp param_type!(%Date{}), do: "Date"
+  defp param_type!(%NaiveDateTime{}), do: "DateTime"
+  defp param_type!(%DateTime{}), do: "DateTime"
+  defp param_type!([]), do: "Array(String)"
+  defp param_type!([head | _]), do: "Array(#{param_type!(head)})"
+
+  defp param_type!(other) do
     raise ArgumentError,
-          "the ClickHouse adapter only supports UTC DateTime literals (ClickHouse's DateTime " <>
-            "column type has no offset of its own), got #{inspect(dt)}"
+          "the ClickHouse adapter does not know how to bind #{inspect(other)} as a query " <>
+            "parameter"
   end
 
-  defp encode_literal(%Date{} = d), do: [?', Date.to_string(d), ?']
-  defp encode_literal(b) when is_binary(b), do: [?', escape_string(b), ?']
-
-  # ClickHouse's `Array(T)` literal syntax (`[elem1, elem2, ...]`) -- used
-  # for `Array(T)`-typed INSERT parameters (clickhouse_adapter_elixir-8a2.19).
-  # Each element is encoded via this same `encode_literal/1`, so a list of
-  # strings/integers/`Decimal`s/etc all work for free, recursively (this is
-  # also what makes `Array(Array(T))` "just work").
-  defp encode_literal(list) when is_list(list) do
-    [?[, Enum.map_intersperse(list, ?,, &encode_literal/1), ?]]
-  end
-
-  # ClickHouse's `Map(K, V)` literal syntax (`{key1: value1, key2: value2}`,
-  # confirmed live via `INSERT ... VALUES (1, {'a':1,'b':2})`) -- used for
-  # `Map(K, V)`-typed INSERT parameters (clickhouse_adapter_elixir-8a2.21).
-  # Ecto's built-in `:map` type dumps/loads a plain Elixir map unchanged
-  # (see `Ecto.Type`'s base `:map` handling), and
-  # `ChDriver.Protocol.NativeBlock.decode_map/3` already decodes
-  # `Map(K, V)` columns to plain Elixir maps, so `:map` is the schema-side
-  # type paired with a `Map(K, V)` migration column given as a quoted atom
-  # (e.g. `add(:m, :"Map(String, UInt32)")`) -- same escape-hatch pattern as
-  # `LowCardinality(T)`.
-  defp encode_literal(map) when is_map(map) do
-    [
-      ?{,
-      Enum.map_intersperse(map, ?,, fn {k, v} -> [encode_literal(k), ?:, encode_literal(v)] end),
-      ?}
-    ]
-  end
-
-  defp encode_literal(other) do
-    raise ArgumentError,
-          "the ClickHouse adapter does not yet know how to encode #{inspect(other)} as a SQL literal"
-  end
-
-  # ClickHouse string literals use backslash escaping (like MySQL), confirmed
-  # live: `SELECT 'it''s'` fails while `SELECT 'it\'s'` and doubled
-  # backslashes round-trip correctly.
+  # ClickHouse string literals use backslash escaping (like MySQL):
+  # `SELECT 'it''s'` fails while `SELECT 'it\'s'` and doubled
+  # backslashes round-trip correctly. Used for the handful of literal
+  # constants `expr/3` writes directly into the query text (values that
+  # come from the query definition itself, not a runtime `^` param).
   defp escape_string(value) do
     value
     |> :binary.replace("\\", "\\\\", [:global])

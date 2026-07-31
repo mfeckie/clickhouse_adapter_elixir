@@ -284,6 +284,23 @@ defmodule Ecto.Adapters.ClickHouse.RepoAdvancedIntegrationTest do
              Measurement |> where([m], m.label == ^tricky) |> TestRepo.all()
   end
 
+  test "a literal '?' character in raw SQL text never misaligns bind params" do
+    # `Ecto.Adapters.SQL.Connection.query/4`'s `?` placeholders are raw SQL
+    # text, not AST-generated -- a naive `String.split(sql, "?")` (the old
+    # `inline_params/2` this replaced) would misalign here: the first `?`
+    # inside the string literal isn't a bind placeholder at all, so a
+    # split-based scan would see 2 placeholders for 1 real param.
+    # `bind_params/2` tracks quoted regions instead, so this round-trips.
+    assert {:ok, %{rows: [[42, "is this a ? mark?"]]}} =
+             TestRepo.query("SELECT ?, 'is this a ? mark?'", [42])
+
+    # And the reverse: a bound *value* containing a literal '?' must reach
+    # the server byte-for-byte via the wire parameter, never inlined as SQL
+    # text at all.
+    assert {:ok, %{rows: [["contains a ? too"]]}} =
+             TestRepo.query("SELECT ?", ["contains a ? too"])
+  end
+
   test "a :boolean Ecto field backed by ClickHouse's UInt8 boolean convention round-trips through Repo.insert!/Repo.all" do
     # `Ecto.Adapters.ClickHouse.Connection.encode_literal/1` already writes
     # `true`/`false` as the SQL literals `1`/`0` (ClickHouse has no native

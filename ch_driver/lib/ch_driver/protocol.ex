@@ -214,6 +214,17 @@ defmodule ChDriver.Protocol do
   @query_stage_complete 2
   @compression_disabled 0
 
+  # The "custom setting" flag bit (Core/BaseSettingsFwdDeclsGen.h /
+  # SettingsWriteFormat) marking a settings-changes entry as a named
+  # value outside the fixed Settings schema rather than a real server
+  # setting. Query parameters piggyback on exactly this mechanism: the
+  # bytes after the query string are the *same* (name, flags, value)
+  # triple format as the per-query settings block earlier in the packet,
+  # just with this flag always set. For example, `SELECT {id:UInt64}`
+  # bound to `--param_id=5` puts `02` (this flag) between the "id" name
+  # string and the `'5'` value string.
+  @custom_setting_flag 2
+
   @doc """
   Encodes a Query packet (Client packet type 1) for `query_string`.
 
@@ -234,14 +245,22 @@ defmodule ChDriver.Protocol do
         un-enveloped Native blocks rather than wrapped in
         `ChNative.Block`)
       query string
-      query parameters (string "" -- empty terminator, gated on
+      query parameters (see `encode_query_parameters/1` -- gated on
         DBMS_MIN_PROTOCOL_VERSION_WITH_PARAMETERS, always satisfied here)
 
-  `opts` accepts `:query_id` (defaults to `""`).
+  `opts` accepts:
+
+    * `:query_id` -- defaults to `""`.
+    * `:params` -- a list of `{name :: binary, raw_text :: binary}` pairs
+      binding `query_string`'s `{name:Type}` placeholders (see
+      `param_text/1` for turning an Elixir value into `raw_text` and
+      `escape_rounds/1` for the matching escape depth -- a bare 2-tuple
+      defaults to the scalar depth of 2). Defaults to `[]`.
   """
   @spec encode_query(binary, keyword) :: iodata
   def encode_query(query_string, opts \\ []) do
     query_id = Keyword.get(opts, :query_id, "")
+    params = Keyword.get(opts, :params, [])
 
     [
       Varint.encode(@client_query),
@@ -252,9 +271,137 @@ defmodule ChDriver.Protocol do
       Varint.encode(@query_stage_complete),
       Varint.encode(@compression_disabled),
       Varint.encode_string(query_string),
+      encode_query_parameters(params)
+    ]
+  end
+
+  # Each parameter is a (name, flags, value) triple identical in shape to
+  # a per-query settings entry, terminated by an empty name -- see
+  # `@custom_setting_flag`. `value` is always sent as a single-quoted,
+  # backslash-escaped string, regardless of the parameter's declared
+  # `{name:Type}` -- the server re-parses this text as a literal against
+  # that type. For example, `--param_id=5` bound to `{id:UInt64}` sends
+  # the three bytes `'`, `5`, `'` as the value, not a raw UInt64.
+  defp encode_query_parameters(params) do
+    [
+      Enum.map(params, fn
+        {name, raw_text, rounds} -> encode_one_param(name, raw_text, rounds)
+        {name, raw_text} -> encode_one_param(name, raw_text, 2)
+      end),
       Varint.encode_string("")
     ]
   end
+
+  defp encode_one_param(name, raw_text, rounds) do
+    [
+      Varint.encode_string(name),
+      Varint.encode(@custom_setting_flag),
+      Varint.encode_string(quote_param_value(raw_text, rounds))
+    ]
+  end
+
+  # The server unescapes a scalar parameter's value text *twice* before
+  # parsing it against the declared type, but only *once* for each string
+  # inside an `Array(String)`/`Map` value's already-quoted element syntax
+  # (see `array_element_text/1`). A scalar value escaped only once loses
+  # backslashes asymmetrically (an odd leftover backslash fuses with the
+  # next character into an unintended escape, e.g. `\b` becomes a
+  # backspace byte), while escaping it twice round-trips exactly. An
+  # `Array(String)` value escaped *twice*, on the other hand, corrupts its
+  # already-`\'`-escaped elements, because the array parses each element
+  # with a single-escape "Quoted" reader, one level shallower than the
+  # plain scalar path (`ReplaceQueryParameterVisitor` re-parses a scalar's
+  # already-unescaped custom-setting value as escaped text a second time,
+  # but does not do so for array elements). This is undocumented ClickHouse
+  # behavior, treated here as a black-box wire fact rather than a designed
+  # feature.
+  defp quote_param_value(raw_text, rounds) do
+    escaped = Enum.reduce(1..rounds, raw_text, fn _, acc -> escape_once(acc) end)
+    <<?', escaped::binary, ?'>>
+  end
+
+  defp escape_once(bin) do
+    bin
+    |> :binary.replace("\\", "\\\\", [:global])
+    |> :binary.replace("'", "\\'", [:global])
+  end
+
+  @doc """
+  The number of backslash/quote-escaping rounds `encode_query/2` must apply
+  to bind `value` for it to round-trip -- `1` for a list (the `Array`
+  literal text `param_text/1` renders for it already has its string
+  elements `\\'`-escaped once, see `array_element_text/1`), `2` for
+  everything else. See `quote_param_value/2`'s comment for why these
+  differ. Takes the same Elixir term `param_text/1` would be called with,
+  not its rendered text.
+  """
+  @spec escape_rounds(term) :: 1 | 2
+  def escape_rounds(list) when is_list(list), do: 1
+  def escape_rounds(_other), do: 2
+
+  @doc """
+  Renders an Elixir term as the unquoted, unescaped ClickHouse literal
+  text a query parameter's value should carry -- the same text you'd
+  type after a `CAST(..., 'Type')` for that value. `encode_query/2`
+  applies the wire-level quoting/escaping on top of this (see
+  `encode_query_parameters/1`); this function only handles turning the
+  value itself into ClickHouse literal syntax.
+
+  There is no clause for `nil`: ClickHouse's query
+  parameters have no type-independent way to express NULL (a
+  `Nullable(String)`-typed NULL parameter fails to bind against, say, an
+  `Int32` column), so callers should inline a literal `NULL` into the
+  query text instead of routing `nil` through this.
+  """
+  @spec param_text(term) :: binary
+  def param_text(b) when is_binary(b), do: b
+  def param_text(i) when is_integer(i), do: Integer.to_string(i)
+  def param_text(f) when is_float(f), do: Float.to_string(f)
+  def param_text(true), do: "1"
+  def param_text(false), do: "0"
+  def param_text(%Decimal{} = d), do: Decimal.to_string(d, :normal)
+  def param_text(%Date{} = d), do: Date.to_string(d)
+  def param_text(%NaiveDateTime{} = ndt), do: NaiveDateTime.to_string(ndt)
+
+  # DateTime.to_string/1 appends a "Z"/offset suffix that ClickHouse's
+  # DateTime literal parser rejects outright -- only a UTC DateTime maps
+  # unambiguously onto ClickHouse's own offset-less DateTime type (same
+  # reasoning as `Ecto.Adapters.ClickHouse.Connection`'s literal
+  # encoding).
+  def param_text(%DateTime{utc_offset: 0, std_offset: 0} = dt) do
+    dt |> DateTime.to_naive() |> NaiveDateTime.to_string()
+  end
+
+  def param_text(%DateTime{} = dt) do
+    raise ArgumentError,
+          "only UTC DateTime values can be bound as a ClickHouse query parameter " <>
+            "(ClickHouse's DateTime column type has no offset of its own), got #{inspect(dt)}"
+  end
+
+  # ClickHouse's `Array(T)` literal syntax (`[elem1, elem2, ...]`), with
+  # string elements individually quoted/escaped the same way the wire
+  # layer quotes the parameter as a whole. An `Array(String)` parameter
+  # value must already contain valid `['a', 'b']`-style syntax *before*
+  # the outer wire-level quoting is applied, not a bare comma-joined list.
+  def param_text(list) when is_list(list) do
+    IO.iodata_to_binary([?[, Enum.map_intersperse(list, ?,, &array_element_text/1), ?]])
+  end
+
+  def param_text(other) do
+    raise ArgumentError,
+          "don't know how to bind #{inspect(other)} as a ClickHouse query parameter"
+  end
+
+  defp array_element_text(b) when is_binary(b) do
+    escaped =
+      b
+      |> :binary.replace("\\", "\\\\", [:global])
+      |> :binary.replace("'", "\\'", [:global])
+
+    <<?', escaped::binary, ?'>>
+  end
+
+  defp array_element_text(other), do: param_text(other)
 
   # ClientInfo sub-structure written as part of a Query packet. Field order
   # confirmed against ClickHouse's Interpreters/ClientInfo.cpp (write/read,

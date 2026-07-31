@@ -9,7 +9,11 @@ defmodule ChDriver.DBConnection do
   a thin adapter: `handle_execute/4` calls `ChDriver.Connection.query/2,3`
   and translates its `{:ok, %{columns:, rows:}}` / `{:error, term}` shape
   into DBConnection's `{:ok, query, result, state}` /
-  `{:error | :disconnect, exception, state}` contract.
+  `{:error | :disconnect, exception, state}` contract. `params` is a list
+  of `{name, raw_text}` or `{name, raw_text, escape_rounds}` tuples (see
+  `ChDriver.Protocol.param_text/1`/`escape_rounds/1`) binding the query's
+  `{name:Type}` placeholders via ClickHouse's native query-parameters
+  mechanism -- see `ChDriver.Protocol.encode_query/2`.
 
   Socket-level failures (`:gen_tcp` errors such as `:closed`/`:timeout`)
   are treated as `:disconnect` so the pool tears down and reconnects the
@@ -69,7 +73,9 @@ defmodule ChDriver.DBConnection do
   end
 
   @impl true
-  def handle_execute(%Query{statement: statement} = query, _params, opts, state) do
+  def handle_execute(%Query{statement: statement} = query, params, opts, state) do
+    opts = Keyword.put(opts, :params, params)
+
     case Connection.query(state, statement, opts) do
       {:ok, %{columns: columns, rows: rows}} ->
         result = %Result{columns: columns, rows: rows, num_rows: length(rows)}
