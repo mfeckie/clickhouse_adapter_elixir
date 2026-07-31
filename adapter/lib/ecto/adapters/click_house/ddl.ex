@@ -264,7 +264,7 @@ defmodule Ecto.Adapters.ClickHouse.DDL do
   `options:` explicitly once that matters.
   """
 
-  alias Ecto.Adapters.ClickHouse.Connection
+  alias Ecto.Adapters.ClickHouse.Naming
   alias Ecto.Migration.{Reference, Table}
 
   @doc false
@@ -461,11 +461,11 @@ defmodule Ecto.Adapters.ClickHouse.DDL do
   end
 
   # `quote_name/1` and `quote_table/1,2` are shared with the SELECT/expression
-  # builder in `Ecto.Adapters.ClickHouse.Connection` (identifier quoting is
-  # the same regardless of whether the identifier appears in DDL or a query),
-  # so they stay defined there as the single source of truth and are called
-  # through as `Connection.quote_name/1` / `Connection.quote_table/1,2` here
+  # builder (identifier quoting is the same regardless of whether the
+  # identifier appears in DDL or a query), so they stay defined in
+  # `Ecto.Adapters.ClickHouse.Naming` as the single source of truth and are
+  # called through as `Naming.quote_name/1` / `Naming.quote_table/1,2` here
   # rather than duplicated.
-  defp quote_name(name), do: Connection.quote_name(name)
-  defp quote_table(prefix, name), do: Connection.quote_table(prefix, name)
+  defp quote_name(name), do: Naming.quote_name(name)
+  defp quote_table(prefix, name), do: Naming.quote_table(prefix, name)
 end
