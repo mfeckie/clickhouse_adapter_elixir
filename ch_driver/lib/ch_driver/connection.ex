@@ -95,16 +95,9 @@ defmodule ChDriver.Connection do
     end
   end
 
-  # CRITICAL: ClickHouse requires this immediately after ServerHello, before
-  # any Query packet, whenever the client's advertised revision is >=
-  # DBMS_MIN_PROTOCOL_VERSION_WITH_ADDENDUM (54458) -- which this driver's
-  # fixed revision always is. It's a raw length-prefixed string (empty
-  # quota key), *not* a full packet (no packet-type varint). Skipping this
-  # silently desyncs every subsequent byte: the server blocks on it right
-  # after sending ServerHello, so it consumes the start of whatever we send
-  # next (e.g. a Query packet) as this string instead, surfacing later as a
-  # confusing, seemingly-unrelated protocol error. See
-  # `ChDriver.Protocol.addendum_required?/0` for how this was found live.
+  # See `ChDriver.Protocol.Messages.encode_addendum/0` for the full
+  # explanation of what the Addendum is, when it's required, and why
+  # skipping it silently desyncs every subsequent byte on the connection.
   defp send_addendum_if_required(socket) do
     if Protocol.addendum_required?() do
       :gen_tcp.send(socket, Protocol.encode_addendum())
