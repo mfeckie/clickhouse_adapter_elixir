@@ -6,8 +6,9 @@ defmodule Mix.Tasks.Stress.Load do
   @moduledoc """
   Ramps through fixed concurrency levels, at each level running a mix of
   the dashboard-style query shapes in `Stress.Queries` concurrently
-  against `Stress.Repo`, and prints basic per-level/per-shape wall-clock
-  latency (count/min/max/avg) plus any errors encountered.
+  against `Stress.Repo`, and prints per-level/per-shape latency
+  percentiles (p50/p95/p99) plus pool checkout-wait percentiles and
+  error/timeout counts.
 
   This is a load-generation harness, not a correctness test -- it exists
   to build confidence that the adapter/driver's connection pool holds up
@@ -16,11 +17,26 @@ defmodule Mix.Tasks.Stress.Load do
   does not assert anything about the numbers it prints; a human (or a
   later automated task) reads the output.
 
-  A later, separately-scoped task adds telemetry-based percentile/pool
-  metrics on top of this harness. This task's job is only to be
-  independently runnable and useful *before* that lands -- see
-  `Stress.Queries.execute/2`'s moduledoc for the single seam that later
-  work hooks into; nothing here needs to change for it to land cleanly.
+  Percentiles instead of min/max/avg: min/max/avg tells you almost
+  nothing about whether latency stays bounded under concurrency -- a
+  single slow outlier moves max but says nothing about what most
+  requests experience, and avg is dragged around by the same outliers
+  it's supposed to summarize away. p95/p99 are what actually expose
+  tail-latency blowup as concurrency ramps.
+
+  Pool checkout-wait (queue_time) alongside total latency: without it,
+  "queries got slow" and "the connection pool is the bottleneck" look
+  identical from the outside. Reported separately, a level where
+  queue_time tracks total_time upward says the pool is the bottleneck; a
+  level where queue_time stays flat while total_time grows says
+  ClickHouse itself is the bottleneck.
+
+  Both come from the `[:stress, :repo, :query]` telemetry event
+  `Ecto.Repo`/`Ecto.Adapters.SQL` already emits on every query (confirmed
+  against ecto 3.14.1 / ecto_sql 3.14.0 / db_connection 2.10.2, the
+  versions this project's `mix.lock` pins) -- see `handle_query_event/4`.
+  `Stress.Queries.execute/2` itself is untouched; this task only wraps it
+  more thoroughly than before.
 
   ## Usage
 
@@ -76,12 +92,29 @@ defmodule Mix.Tasks.Stress.Load do
   query failing (a ClickHouse error, a connection blip) is counted as an
   error for that shape and does not stop the worker, the concurrency
   level, or the run.
+
+  A connection-pool checkout timeout (worker waited for a free connection
+  longer than `:queue_target`/`:queue_interval` allow) is *also* just a
+  raised `DBConnection.ConnectionError`, caught by that same `rescue` --
+  confirmed empirically (not assumed) by racing queries against a
+  single-connection pool and observing both (a) the
+  `[:stress, :repo, :query]` telemetry event still firing, with only
+  `queue_time`/`total_time` present (no `query_time` -- the query itself
+  never ran), and (b) `Repo.all/2` raising `DBConnection.ConnectionError`
+  up to the caller same as any other query error. So a pool timeout is
+  never silently dropped: it shows up both as a `queue_time` sample and
+  as a counted error/timeout below.
   """
 
   alias Stress.Queries
 
   @default_concurrency_levels [10, 50, 200]
   @default_iterations_per_level 20
+
+  # Ecto's own event, not something this task invents -- see the
+  # moduledoc for the exact Ecto/DBConnection versions this was
+  # confirmed against.
+  @query_telemetry_event [:stress, :repo, :query]
 
   @impl Mix.Task
   def run(args) do
@@ -152,43 +185,99 @@ defmodule Mix.Tasks.Stress.Load do
 
     started_at = System.monotonic_time(:millisecond)
 
+    # One handler per level, always detached in `after` -- a `make_ref/0`
+    # id guarantees no collision with a handler from a previous level or a
+    # previous `mix stress.load` run still lingering (telemetry handlers
+    # are global/process-independent, so a leaked one would keep firing
+    # into a dead collector and silently double-count on the next level).
+    {:ok, collector} = Agent.start_link(fn -> [] end)
+    handler_id = {__MODULE__, make_ref()}
+
     results =
-      1..concurrency
-      |> Task.async_stream(
-        fn _worker ->
-          Enum.map(0..(iterations_per_level - 1), fn i ->
-            shape = Enum.at(shapes, rem(i, shape_count))
-            time_execution(shape)
-          end)
-        end,
-        max_concurrency: concurrency,
-        timeout: :infinity
-      )
-      |> Enum.flat_map(fn {:ok, worker_results} -> worker_results end)
+      try do
+        :telemetry.attach(
+          handler_id,
+          @query_telemetry_event,
+          &__MODULE__.handle_query_event/4,
+          collector
+        )
+
+        1..concurrency
+        |> Task.async_stream(
+          fn _worker ->
+            Enum.map(0..(iterations_per_level - 1), fn i ->
+              shape = Enum.at(shapes, rem(i, shape_count))
+              time_execution(shape)
+            end)
+          end,
+          max_concurrency: concurrency,
+          timeout: :infinity
+        )
+        |> Enum.flat_map(fn {:ok, worker_results} -> worker_results end)
+      after
+        :telemetry.detach(handler_id)
+      end
+
+    telemetry_samples = Agent.get(collector, & &1)
+    Agent.stop(collector)
 
     elapsed_ms = System.monotonic_time(:millisecond) - started_at
 
-    print_summary(results, elapsed_ms)
+    print_summary(results, telemetry_samples, elapsed_ms)
   end
 
-  # The single per-query timing wrapper mentioned in the moduledoc --
-  # everything about *what* runs lives in `Stress.Queries.execute/2`, this
-  # only measures wall-clock time around one call and turns a raised error
-  # into a counted `:error` result instead of crashing the worker.
+  # `Queries.execute/2` runs synchronously in this worker process and,
+  # underneath, so does Ecto/DBConnection's own telemetry callback for it
+  # (no spawn in between) -- so stashing the shape here in the process
+  # dictionary right before the call is a safe way for
+  # `handle_query_event/4` to attribute the event it receives a moment
+  # later back to the shape that produced it. The event's own metadata
+  # only carries the query's source table (`"page_views"` for every shape
+  # here, since that's every shape's base `from`), so it can't
+  # distinguish shapes on its own.
+  #
+  # The `rescue` is still what turns a raised error (a ClickHouse error, a
+  # connection blip, a pool checkout timeout -- see the moduledoc's
+  # "Error handling" section) into a counted `:error` result instead of
+  # crashing the worker; wall-clock timing itself is no longer measured
+  # here since the telemetry event's own `total_time` (collected by
+  # `handle_query_event/4`) is the more accurate number for percentiles.
   defp time_execution(shape) do
-    {time_us, outcome} =
-      :timer.tc(fn ->
-        try do
-          {:ok, Queries.execute(Stress.Repo, shape)}
-        rescue
-          error -> {:error, error}
-        end
-      end)
+    Process.put(:stress_query_shape, shape)
 
-    %{shape: shape, duration_ms: time_us / 1000, outcome: outcome}
+    outcome =
+      try do
+        {:ok, Queries.execute(Stress.Repo, shape)}
+      rescue
+        error -> {:error, error}
+      end
+
+    %{shape: shape, outcome: outcome}
   end
 
-  defp print_summary(results, elapsed_ms) do
+  @doc false
+  # Runs in the same process as the query that triggered it (see
+  # `time_execution/1`). `measurements` keys are native time units and
+  # only present when non-nil (Ecto drops nil components rather than
+  # sending zeroes) -- a pool checkout timeout means `query_time`/
+  # `decode_time` are absent, since the query itself never ran, but
+  # `queue_time`/`total_time` are always there.
+  def handle_query_event(_event, measurements, _metadata, collector) do
+    shape = Process.get(:stress_query_shape)
+    total_time_ms = native_to_ms(measurements[:total_time])
+    queue_time_ms = native_to_ms(measurements[:queue_time])
+
+    Agent.update(collector, fn samples -> [{shape, total_time_ms, queue_time_ms} | samples] end)
+  end
+
+  defp native_to_ms(nil), do: nil
+
+  defp native_to_ms(native_time),
+    do: System.convert_time_unit(native_time, :native, :microsecond) / 1000
+
+  defp print_summary(results, telemetry_samples, elapsed_ms) do
+    telemetry_by_shape = Enum.group_by(telemetry_samples, fn {shape, _total, _queue} -> shape end)
+
     results
     |> Enum.group_by(& &1.shape)
     |> Enum.sort_by(fn {shape, _} -> shape end)
@@ -196,19 +285,29 @@ defmodule Mix.Tasks.Stress.Load do
       {ok_results, error_results} =
         Enum.split_with(shape_results, fn %{outcome: outcome} -> match?({:ok, _}, outcome) end)
 
-      durations = Enum.map(ok_results, & &1.duration_ms)
+      # `DBConnection.ConnectionError` is what a pool checkout timeout
+      # raises (see the moduledoc) -- singled out here so a run can tell
+      # "ClickHouse rejected/errored some queries" apart from "the pool
+      # couldn't keep up with this concurrency level" at a glance.
+      timeout_count =
+        Enum.count(error_results, fn %{outcome: {:error, error}} ->
+          match?(%DBConnection.ConnectionError{}, error)
+        end)
 
-      line =
-        if durations == [] do
-          "  #{shape}: 0 ok, #{length(error_results)} errors"
-        else
-          "  #{shape}: #{length(ok_results)} ok, #{length(error_results)} errors -- " <>
-            "min #{format_ms(Enum.min(durations))}ms, " <>
-            "max #{format_ms(Enum.max(durations))}ms, " <>
-            "avg #{format_ms(Enum.sum(durations) / length(durations))}ms"
-        end
+      {total_samples, queue_samples} =
+        shape
+        |> then(&Map.get(telemetry_by_shape, &1, []))
+        |> Enum.reduce({[], []}, fn {_shape, total, queue}, {totals, queues} ->
+          {prepend_if_present(totals, total), prepend_if_present(queues, queue)}
+        end)
 
-      Mix.shell().info(line)
+      Mix.shell().info(
+        "  #{shape}: #{length(ok_results)} ok, #{length(error_results)} errors " <>
+          "(#{timeout_count} pool timeouts)"
+      )
+
+      Mix.shell().info("    latency (ms):   #{percentile_line(total_samples)}")
+      Mix.shell().info("    pool wait (ms): #{percentile_line(queue_samples)}")
 
       Enum.each(error_results, fn %{outcome: {:error, error}} ->
         Mix.shell().info("    error: #{Exception.format(:error, error, [])}" |> first_line())
@@ -216,6 +315,32 @@ defmodule Mix.Tasks.Stress.Load do
     end)
 
     Mix.shell().info("  (wall clock for this level: #{elapsed_ms}ms)")
+  end
+
+  defp prepend_if_present(list, nil), do: list
+  defp prepend_if_present(list, value), do: [value | list]
+
+  defp percentile_line([]), do: "n/a (no samples)"
+
+  defp percentile_line(samples) do
+    sorted = Enum.sort(samples)
+
+    "p50 #{format_ms(percentile(sorted, 50))}  " <>
+      "p95 #{format_ms(percentile(sorted, 95))}  " <>
+      "p99 #{format_ms(percentile(sorted, 99))}"
+  end
+
+  # Nearest-rank percentile: pick the sample at position `ceil(p/100 * n)`
+  # in the sorted list, no interpolation between adjacent ranks. That's a
+  # coarser estimate than interpolated methods, but it's simple to read
+  # and audit, and at the sample sizes this harness collects (tens to a
+  # few thousand per shape/level) interpolation wouldn't move the number
+  # by anything that matters against tail-latency blowup, which is what
+  # this is for.
+  defp percentile(sorted_samples, p) do
+    count = length(sorted_samples)
+    rank = (p * count / 100) |> Float.ceil() |> trunc() |> max(1) |> min(count)
+    Enum.at(sorted_samples, rank - 1)
   end
 
   defp format_ms(ms), do: Float.round(ms * 1.0, 2)
