@@ -159,107 +159,68 @@ defmodule ChDriver.Protocol.NativeBlock do
   defp decode_maybe_sparse(true, type, num_rows, binary),
     do: Sparse.decode_sparse(type, num_rows, binary)
 
-  # Top-level type dispatch, in two flat steps:
-  #
-  #   1. `classify_type/1` parses `type` *once* into a normalized tagged
-  #      tuple -- `{:nullable, inner}`, `{:array, inner}`, `{:map, k, v}`,
-  #      `{:low_cardinality, inner}`, `{:decimal, precision, scale}`,
-  #      `{:fixed_string, size}`, or `{:plain, type}` if none of
-  #      `ChDriver.Types`' wrapper parsers match. Each wrapper parser is
-  #      tried independently (via `Enum.find_value/2`), so this is a flat
-  #      list of parser attempts rather than a chain of nested fallbacks.
-  #   2. `decode_column_data/3` pattern-matches that tagged tuple with one
-  #      flat `case` clause per wrapper kind, calling the matching
-  #      `ChDriver.Protocol.Block.Wrappers` decoder -- `{:plain, type}`
-  #      falls through to the `ChDriver.Types.Registry.column_codec/1`
-  #      table exactly as before.
-  #
-  # This is the extension point for new wrapper types: add one
-  # `Types.parse_*/1` clause to the list in `classify_type/1`'s
-  # `Enum.find_value/2`, one tagged-tuple `case` clause here, and a
-  # `decode_*` function alongside `ChDriver.Protocol.Block.Wrappers.decode_nullable/3`
-  # -- no nested branches to restructure.
+  # Flat, single-pass dispatch: try each `ChDriver.Types` wrapper parser in
+  # turn (via `Enum.find_value/2`) and call its matching
+  # `ChDriver.Protocol.Block.Wrappers` decoder right in the same closure,
+  # instead of first normalizing into a tagged tuple that a *second*,
+  # separate `case` then has to stay in sync with by hand (that was the
+  # original shape here, and the same footgun `ChDriver.Protocol.Block.Sparse`'s
+  # `default_value/1` used to have -- see commit 26387d2). Falls back to
+  # `decode_plain/3` (the `ChDriver.Types.Registry.column_codec/1` table)
+  # once every wrapper parser has missed. `:error` (a truthy, non-`nil`
+  # term) is mapped to `nil` so `Enum.find_value/2` -- which only treats
+  # `nil`/`false` as "keep scanning" -- doesn't stop at the first parser
+  # that simply didn't match. Extending this with a new wrapper type means
+  # adding one more attempt to the list, nothing else -- there's no second
+  # place that needs a matching clause.
   @doc false
   def decode_column_data(type, num_rows, binary) do
-    case classify_type(type) do
-      {:nullable, inner_type} ->
-        Wrappers.decode_nullable(inner_type, num_rows, binary)
-
-      {:array, inner_type} ->
-        Wrappers.decode_array(inner_type, num_rows, binary)
-
-      {:map, key_type, value_type} ->
-        Wrappers.decode_map(key_type, value_type, num_rows, binary)
-
-      {:low_cardinality, inner_type} ->
-        Wrappers.decode_low_cardinality(inner_type, num_rows, binary)
-
-      {:decimal, precision, scale} ->
-        Wrappers.decode_decimal(precision, scale, num_rows, binary)
-
-      {:fixed_string, size} ->
-        Registry.decode_fixed_width(binary, num_rows, size, & &1)
-
-      {:plain, type} ->
-        case Registry.column_codec(type) do
-          {:fixed, byte_size, unpack} ->
-            Registry.decode_fixed_width(binary, num_rows, byte_size, unpack)
-
-          :string ->
-            Registry.decode_strings(binary, num_rows, [])
-
-          :unsupported ->
-            {:error, {:unsupported_type, type}}
-        end
-    end
-  end
-
-  # Tries each `ChDriver.Types` wrapper parser in turn (flat list, no
-  # nesting) and normalizes whichever one matches into a single tagged
-  # tuple; falls back to `{:plain, type}` when none of them recognize
-  # `type` (i.e. it's a scalar/fixed-width type handled by
-  # `ChDriver.Types.Registry.column_codec/1`).
-  defp classify_type(type) do
-    wrapper_parsers = [
+    wrapper_attempts = [
       fn t ->
-        case Types.parse_nullable(t) do
-          {:ok, inner} -> {:nullable, inner}
-          :error -> nil
-        end
+        with {:ok, inner} <- Types.parse_nullable(t),
+             do: Wrappers.decode_nullable(inner, num_rows, binary)
       end,
       fn t ->
-        case Types.parse_array(t) do
-          {:ok, inner} -> {:array, inner}
-          :error -> nil
-        end
+        with {:ok, inner} <- Types.parse_array(t),
+             do: Wrappers.decode_array(inner, num_rows, binary)
       end,
       fn t ->
-        case Types.parse_map(t) do
-          {:ok, key_type, value_type} -> {:map, key_type, value_type}
-          :error -> nil
-        end
+        with {:ok, key_type, value_type} <- Types.parse_map(t),
+             do: Wrappers.decode_map(key_type, value_type, num_rows, binary)
       end,
       fn t ->
-        case Types.parse_low_cardinality(t) do
-          {:ok, inner} -> {:low_cardinality, inner}
-          :error -> nil
-        end
+        with {:ok, inner} <- Types.parse_low_cardinality(t),
+             do: Wrappers.decode_low_cardinality(inner, num_rows, binary)
       end,
       fn t ->
-        case Types.parse_decimal(t) do
-          {:ok, precision, scale} -> {:decimal, precision, scale}
-          :error -> nil
-        end
+        with {:ok, precision, scale} <- Types.parse_decimal(t),
+             do: Wrappers.decode_decimal(precision, scale, num_rows, binary)
       end,
       fn t ->
-        case Types.parse_fixed_string(t) do
-          {:ok, size} -> {:fixed_string, size}
-          :error -> nil
-        end
+        with {:ok, size} <- Types.parse_fixed_string(t),
+             do: Registry.decode_fixed_width(binary, num_rows, size, & &1)
       end
     ]
 
-    Enum.find_value(wrapper_parsers, fn parser -> parser.(type) end) || {:plain, type}
+    Enum.find_value(wrapper_attempts, fn attempt ->
+      case attempt.(type) do
+        :error -> nil
+        result -> result
+      end
+    end) || decode_plain(type, num_rows, binary)
+  end
+
+  defp decode_plain(type, num_rows, binary) do
+    case Registry.column_codec(type) do
+      {:fixed, byte_size, unpack} ->
+        Registry.decode_fixed_width(binary, num_rows, byte_size, unpack)
+
+      :string ->
+        Registry.decode_strings(binary, num_rows, [])
+
+      :unsupported ->
+        {:error, {:unsupported_type, type}}
+    end
   end
 
   defp transpose(_column_data, 0), do: []
