@@ -381,6 +381,40 @@ defmodule Ecto.Adapters.ClickHouse.Expression do
     )
   end
 
+  # `fragment(...)` -- splices `raw`/`expr` parts (as produced by
+  # `Ecto.Query.API.fragment/1`'s macro expansion) directly into the SQL,
+  # giving escape-hatch access to any ClickHouse-native function or syntax
+  # this adapter doesn't render natively (e.g. array functions, URL
+  # functions, approximate aggregates). Each `{:expr, ast}` part goes
+  # through the same `expr/3`/`paren_if_needed/3` renderer as everything
+  # else, so `?` placeholders and nested Ecto expressions inside a
+  # fragment work exactly like they do everywhere in a query -- only the
+  # `{:raw, text}` parts are spliced in verbatim. This clause must stay
+  # ahead of the generic `{fun, _, args}` function-call clause below:
+  # `:fragment` is itself an atom with a list of args, so without this
+  # clause taking precedence it would fall through there and try to
+  # render `{:raw, _}`/`{:expr, _}` 2-tuples as ordinary function
+  # arguments, producing the "unsupported expression" error instead of
+  # real SQL.
+  #
+  # The keyword-list/interpolated-fragment form (`fragment(splice: ...)`
+  # or a runtime-built fragment) is rejected explicitly, matching every
+  # other Ecto SQL adapter (Postgres, MyXQL) -- it's a distinct, rarer
+  # fragment shape this adapter doesn't implement.
+  def expr({:fragment, _, [kw]}, _sources, query) when is_list(kw) or tuple_size(kw) == 3 do
+    Naming.error!(
+      query,
+      "the ClickHouse adapter does not support keyword or interpolated fragments"
+    )
+  end
+
+  def expr({:fragment, _, parts}, sources, query) do
+    Enum.map(parts, fn
+      {:raw, part} -> part
+      {:expr, expr} -> paren_if_needed(expr, sources, query)
+    end)
+  end
+
   def expr({fun, _, args}, sources, query) when is_atom(fun) and is_list(args) do
     case handle_call(fun, length(args)) do
       {:binary_op, op} ->
