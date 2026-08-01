@@ -18,7 +18,7 @@ ch_driver  -->  clickhouse_adapter_ecto
 Because a package published to Hex.pm cannot depend on another package via
 a local `path:` reference -- every dependency must itself be resolvable
 from Hex -- **publish order matters**. clickhouse_adapter_ecto's Hex-resolved
-version constraint on ch_driver (`{:ch_driver, "~> 0.1"}`, see the
+version constraint on ch_driver (`{:ch_driver, "~> 0.2"}`, see the
 `ch_driver_dep/0` helper in `clickhouse_adapter_ecto/mix.exs`) is meaningless
 until ch_driver actually exists on Hex at a matching version.
 
@@ -112,7 +112,7 @@ runs `mix hex.publish --yes` non-interactively once triggered:
    kept deliberately -- see the naming note at the top of
    `.github/workflows/clickhouse_adapter_ecto_release.yml`), once ch_driver
    is published and satisfies clickhouse_adapter_ecto's
-   `{:ch_driver, "~> 0.1"}` constraint. Triggers
+   `{:ch_driver, "~> 0.2"}` constraint. Triggers
    `.github/workflows/clickhouse_adapter_ecto_release.yml`. Hex package name:
    `clickhouse_adapter_ecto` (decided -- see the naming note below).
 
@@ -123,8 +123,12 @@ runs `mix hex.publish --yes` non-interactively once triggered:
    generate.
 
 If you bump a version constraint (e.g. moving clickhouse_adapter_ecto to
-require `ch_driver ~> 0.2` after a breaking change), update it in
-`clickhouse_adapter_ecto/mix.exs` *before* tagging its release.
+require a newer ch_driver after a breaking change, or after a bugfix the
+adapter's own behavior now depends on -- as happened moving this
+constraint from `~> 0.1` to `~> 0.2` once ch_driver 0.2.0 fixed `Date`
+decoding, which the adapter's `:date` migration column type already
+exposed), update it in `clickhouse_adapter_ecto/mix.exs` *before* tagging
+its release.
 
 ## Hex docs are pinned per version
 

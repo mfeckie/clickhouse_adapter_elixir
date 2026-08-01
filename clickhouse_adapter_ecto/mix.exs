@@ -1,7 +1,7 @@
 defmodule ClickhouseAdapterEcto.MixProject do
   use Mix.Project
 
-  @version "0.3.0"
+  @version "0.3.1"
   # clickhouse_adapter_ecto is a sibling project inside the
   # clickhouse_adapter_elixir repo -- see ch_driver/mix.exs for the same
   # convention.
@@ -71,7 +71,7 @@ defmodule ClickhouseAdapterEcto.MixProject do
   # publish order this constraint implies (ch_driver must publish first).
   defp ch_driver_dep do
     if System.get_env("HEX_PUBLISH") in ["1", "true"] do
-      {:ch_driver, "~> 0.1"}
+      {:ch_driver, "~> 0.2"}
     else
       {:ch_driver, path: "../ch_driver"}
     end
