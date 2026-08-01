@@ -97,64 +97,43 @@ defmodule ChDriver.Protocol.Block.Sparse do
   # known default (surfaced by `decode_sparse/3` as a clear
   # `:unsupported_sparse_default` error rather than guessed at).
   #
-  # Same two-step flat dispatch as
-  # `ChDriver.Protocol.NativeBlock.classify_type/1` +
-  # `decode_column_data/3`: try each `ChDriver.Types` wrapper parser in
-  # turn (flat list, no nesting) via `Enum.find_value/2`, normalize
-  # whichever one matches into a tagged tuple, then one flat `case` on
-  # that tuple -- falling back to `scalar_default_value/1` when none of
-  # the wrapper parsers match. Extending this with a new wrapper type
-  # means adding one entry to `wrapper_parsers` and one `case` clause,
-  # not another nesting level.
+  # Flat, single-pass dispatch: try each `ChDriver.Types` wrapper parser in
+  # turn (via `Enum.find_value/2`) and compute its default value right in
+  # the same closure, instead of nesting one `case` inside another for
+  # each wrapper type. Unlike `ChDriver.Protocol.NativeBlock.classify_type/1`
+  # (whose tagged tuple has to be handed off to a *different* function,
+  # `decode_column_data/3`, so it's normalized into an intermediate tuple
+  # first), nothing here needs that hand-off -- each parser's match and the
+  # value it produces never separate, so there's no tag name that has to
+  # stay in sync across two lists. `:error` (a truthy, non-`nil` term) is
+  # mapped to `nil` so `Enum.find_value/2` -- which only treats `nil`/
+  # `false` as "keep scanning" -- doesn't stop at the first parser that
+  # simply didn't match. Falls back to `scalar_default_value/1` once every
+  # wrapper parser has missed. Extending this with a new wrapper type means
+  # adding one more attempt to the list, nothing else.
   defp default_value(type) do
-    wrapper_parsers = [
+    wrapper_attempts = [
+      fn t -> with {:ok, _inner} <- Types.parse_nullable(t), do: {:ok, nil} end,
+      fn t -> with {:ok, _inner} <- Types.parse_array(t), do: {:ok, []} end,
+      fn t -> with {:ok, _key_type, _value_type} <- Types.parse_map(t), do: {:ok, %{}} end,
       fn t ->
-        case Types.parse_nullable(t) do
-          {:ok, inner} -> {:nullable, inner}
-          :error -> nil
-        end
+        with {:ok, inner_type} <- Types.parse_low_cardinality(t), do: default_value(inner_type)
       end,
       fn t ->
-        case Types.parse_array(t) do
-          {:ok, inner} -> {:array, inner}
-          :error -> nil
-        end
+        with {:ok, _precision, scale} <- Types.parse_decimal(t),
+             do: {:ok, Decimal.new(1, 0, -scale)}
       end,
       fn t ->
-        case Types.parse_map(t) do
-          {:ok, key_type, value_type} -> {:map, key_type, value_type}
-          :error -> nil
-        end
-      end,
-      fn t ->
-        case Types.parse_low_cardinality(t) do
-          {:ok, inner} -> {:low_cardinality, inner}
-          :error -> nil
-        end
-      end,
-      fn t ->
-        case Types.parse_decimal(t) do
-          {:ok, precision, scale} -> {:decimal, precision, scale}
-          :error -> nil
-        end
-      end,
-      fn t ->
-        case Types.parse_fixed_string(t) do
-          {:ok, size} -> {:fixed_string, size}
-          :error -> nil
-        end
+        with {:ok, size} <- Types.parse_fixed_string(t), do: {:ok, :binary.copy(<<0>>, size)}
       end
     ]
 
-    case Enum.find_value(wrapper_parsers, fn parser -> parser.(type) end) do
-      {:nullable, _inner} -> {:ok, nil}
-      {:array, _inner} -> {:ok, []}
-      {:map, _key_type, _value_type} -> {:ok, %{}}
-      {:low_cardinality, inner_type} -> default_value(inner_type)
-      {:decimal, _precision, scale} -> {:ok, Decimal.new(1, 0, -scale)}
-      {:fixed_string, size} -> {:ok, :binary.copy(<<0>>, size)}
-      nil -> scalar_default_value(type)
-    end
+    Enum.find_value(wrapper_attempts, fn attempt ->
+      case attempt.(type) do
+        :error -> nil
+        result -> result
+      end
+    end) || scalar_default_value(type)
   end
 
   @integer_types ~w(UInt8 UInt16 UInt32 UInt64 Int8 Int16 Int32 Int64)
