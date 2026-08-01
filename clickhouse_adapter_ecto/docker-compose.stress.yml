@@ -1,0 +1,22 @@
+services:
+  clickhouse:
+    # Realistic "small production" ClickHouse baseline: a modest dedicated
+    # instance, not the toy resources a bare-metal dev laptop hands out by
+    # default. Caps CPU/memory so stress-test latency numbers have a
+    # meaningful ceiling to compare against instead of reflecting whatever
+    # the host machine happens to have free.
+    #
+    # Uses `deploy.resources.limits` rather than the older `cpus`/
+    # `mem_limit` top-level keys. `deploy.resources` is documented as
+    # swarm-only, but was empirically verified against this environment's
+    # `docker compose` (v5.1.2, non-swarm `up`): `docker inspect` showed
+    # HostConfig.NanoCpus=2000000000 and HostConfig.Memory=4294967296, and
+    # `docker stats` reported "MEM USAGE / LIMIT" as the constrained 4GiB
+    # rather than host memory -- so this version of the Go-based Compose
+    # CLI applies these limits directly to the container's HostConfig
+    # without needing Swarm mode.
+    deploy:
+      resources:
+        limits:
+          cpus: "2"
+          memory: 4g
