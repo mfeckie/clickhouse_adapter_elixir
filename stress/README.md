@@ -72,6 +72,43 @@ error rate, pool timeouts, and latency/pool-wait percentiles, so two runs
 (e.g. before/after a `ch_driver` change) can be diffed side by side later
 instead of only existing as terminal scrollback.
 
+## Soak-testing harness (`mix stress.soak`)
+
+Also requires the dataset to already be seeded. Where `mix stress.load` ramps
+through concurrency levels over seconds to a couple of minutes, `mix
+stress.soak` holds one fixed concurrency level steady for a long duration,
+periodically sampling health instead of only printing one number at the end --
+this is what surfaces a slow connection leak or growing memory footprint that
+a short ramp can't. From `stress/`:
+
+```bash
+mix stress.soak
+mix stress.soak --concurrency 10 --duration-minutes 2 --sample-interval-seconds 20
+```
+
+Options: `--concurrency` (single worker count held steady, default `20`,
+*not* a comma list like `stress.load`'s `--concurrency-levels`),
+`--duration-minutes` (default `30`), `--sample-interval-seconds` (default
+`60`), `--host`/`--port` (same defaults as the other tasks). See
+`Mix.Tasks.Stress.Soak`'s moduledoc for full option docs, the pool-sizing
+rationale, and how workers are run until stopped.
+
+Every sample interval prints a timestamped line with that window's query/error
+counts and error rate, latency and pool-wait percentiles, and current
+`:erlang.memory/0` (total/processes/binary) in MB, e.g.:
+
+```
+[2026-08-01 13:57:41Z] +20s  queries=2092 errors=0 (0 pool timeouts) error_rate=0.0%
+    latency (ms):   p50 101.18  p95 144.08  p99 160.85
+    pool wait (ms): p50 0.02  p95 0.06  p99 0.16
+    memory (MB):    total 70.56  processes 20.79  binary 0.46
+```
+
+After `--duration-minutes` elapses, workers stop cleanly (finishing any
+in-flight query first) and one final summary prints: total queries/errors
+across the whole run, overall latency/pool-wait percentiles, and first-sample
+vs last-sample memory side by side so growth is easy to eyeball.
+
 ## Resource-constrained ClickHouse for stress runs
 
 The plain `docker compose up -d` above gives ClickHouse whatever CPU/memory
