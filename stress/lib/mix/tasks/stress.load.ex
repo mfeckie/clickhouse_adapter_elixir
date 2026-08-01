@@ -59,6 +59,13 @@ defmodule Mix.Tasks.Stress.Load do
     * `--host` / `--port` - ClickHouse native TCP host/port, defaulting
       to `localhost`/`9000` (the docker-compose defaults), matching
       `mix stress.seed`.
+    * `--report-path` - where to write the run's saved markdown summary
+      (concurrency x shape table of counts/error-rate/latency and
+      pool-wait percentiles), defaulting to
+      `reports/stress-report-<UTC timestamp>.md`. The console output
+      above is for watching a run live; this file is what lets two runs
+      (e.g. before/after a `ch_driver` change) be diffed side by side
+      afterwards, since scrollback isn't.
 
   ## Pool sizing (read this before changing `--concurrency-levels`)
 
@@ -126,7 +133,8 @@ defmodule Mix.Tasks.Stress.Load do
           concurrency_levels: :string,
           iterations_per_level: :integer,
           host: :string,
-          port: :integer
+          port: :integer,
+          report_path: :string
         ]
       )
 
@@ -134,6 +142,8 @@ defmodule Mix.Tasks.Stress.Load do
     iterations_per_level = Keyword.get(opts, :iterations_per_level, @default_iterations_per_level)
     host = Keyword.get(opts, :host, "localhost")
     port = Keyword.get(opts, :port, 9000)
+    generated_at = DateTime.utc_now()
+    report_path = Keyword.get(opts, :report_path) || default_report_path(generated_at)
 
     # Sized for the highest level up front -- see the moduledoc's "Pool
     # sizing" section on why undersizing this silently invalidates every
@@ -156,9 +166,30 @@ defmodule Mix.Tasks.Stress.Load do
         log: false
       )
 
-    Enum.each(concurrency_levels, fn concurrency ->
-      run_level(concurrency, iterations_per_level)
-    end)
+    shape_summaries =
+      concurrency_levels
+      |> Enum.map(fn concurrency -> run_level(concurrency, iterations_per_level) end)
+      |> List.flatten()
+
+    write_report(report_path, %{
+      concurrency_levels: concurrency_levels,
+      iterations_per_level: iterations_per_level,
+      host: host,
+      port: port,
+      generated_at: generated_at,
+      shape_summaries: shape_summaries
+    })
+
+    Mix.shell().info("\nStress report written to #{report_path}")
+  end
+
+  # `reports/` (not tracked -- see `stress/.gitignore`) so re-running a
+  # long stress session never risks clobbering an earlier run's saved
+  # numbers -- every invocation without `--report-path` gets its own
+  # timestamped file.
+  defp default_report_path(generated_at) do
+    timestamp = Calendar.strftime(generated_at, "%Y%m%d-%H%M%S")
+    Path.join(["reports", "stress-report-#{timestamp}.md"])
   end
 
   defp parse_concurrency_levels(opts) do
@@ -223,7 +254,7 @@ defmodule Mix.Tasks.Stress.Load do
 
     elapsed_ms = System.monotonic_time(:millisecond) - started_at
 
-    print_summary(results, telemetry_samples, elapsed_ms)
+    print_summary(concurrency, results, telemetry_samples, elapsed_ms)
   end
 
   # `Queries.execute/2` runs synchronously in this worker process and,
@@ -275,50 +306,82 @@ defmodule Mix.Tasks.Stress.Load do
   defp native_to_ms(native_time),
     do: System.convert_time_unit(native_time, :native, :microsecond) / 1000
 
-  defp print_summary(results, telemetry_samples, elapsed_ms) do
+  # Returns the list of per-shape summary maps it just printed (one per
+  # query shape at this concurrency level) -- `run/1` accumulates these
+  # across all levels into the saved markdown report. The console output
+  # itself is unchanged from before this summary data was also returned.
+  defp print_summary(concurrency, results, telemetry_samples, elapsed_ms) do
     telemetry_by_shape = Enum.group_by(telemetry_samples, fn {shape, _total, _queue} -> shape end)
 
-    results
-    |> Enum.group_by(& &1.shape)
-    |> Enum.sort_by(fn {shape, _} -> shape end)
-    |> Enum.each(fn {shape, shape_results} ->
-      {ok_results, error_results} =
-        Enum.split_with(shape_results, fn %{outcome: outcome} -> match?({:ok, _}, outcome) end)
+    shape_summaries =
+      results
+      |> Enum.group_by(& &1.shape)
+      |> Enum.sort_by(fn {shape, _} -> shape end)
+      |> Enum.map(fn {shape, shape_results} ->
+        {ok_results, error_results} =
+          Enum.split_with(shape_results, fn %{outcome: outcome} -> match?({:ok, _}, outcome) end)
 
-      # `DBConnection.ConnectionError` is what a pool checkout timeout
-      # raises (see the moduledoc) -- singled out here so a run can tell
-      # "ClickHouse rejected/errored some queries" apart from "the pool
-      # couldn't keep up with this concurrency level" at a glance.
-      timeout_count =
-        Enum.count(error_results, fn %{outcome: {:error, error}} ->
-          match?(%DBConnection.ConnectionError{}, error)
+        # `DBConnection.ConnectionError` is what a pool checkout timeout
+        # raises (see the moduledoc) -- singled out here so a run can tell
+        # "ClickHouse rejected/errored some queries" apart from "the pool
+        # couldn't keep up with this concurrency level" at a glance.
+        timeout_count =
+          Enum.count(error_results, fn %{outcome: {:error, error}} ->
+            match?(%DBConnection.ConnectionError{}, error)
+          end)
+
+        {total_samples, queue_samples} =
+          shape
+          |> then(&Map.get(telemetry_by_shape, &1, []))
+          |> Enum.reduce({[], []}, fn {_shape, total, queue}, {totals, queues} ->
+            {prepend_if_present(totals, total), prepend_if_present(queues, queue)}
+          end)
+
+        Mix.shell().info(
+          "  #{shape}: #{length(ok_results)} ok, #{length(error_results)} errors " <>
+            "(#{timeout_count} pool timeouts)"
+        )
+
+        Mix.shell().info("    latency (ms):   #{percentile_line(total_samples)}")
+        Mix.shell().info("    pool wait (ms): #{percentile_line(queue_samples)}")
+
+        Enum.each(error_results, fn %{outcome: {:error, error}} ->
+          Mix.shell().info("    error: #{Exception.format(:error, error, [])}" |> first_line())
         end)
 
-      {total_samples, queue_samples} =
-        shape
-        |> then(&Map.get(telemetry_by_shape, &1, []))
-        |> Enum.reduce({[], []}, fn {_shape, total, queue}, {totals, queues} ->
-          {prepend_if_present(totals, total), prepend_if_present(queues, queue)}
-        end)
+        sorted_total = Enum.sort(total_samples)
+        sorted_queue = Enum.sort(queue_samples)
 
-      Mix.shell().info(
-        "  #{shape}: #{length(ok_results)} ok, #{length(error_results)} errors " <>
-          "(#{timeout_count} pool timeouts)"
-      )
-
-      Mix.shell().info("    latency (ms):   #{percentile_line(total_samples)}")
-      Mix.shell().info("    pool wait (ms): #{percentile_line(queue_samples)}")
-
-      Enum.each(error_results, fn %{outcome: {:error, error}} ->
-        Mix.shell().info("    error: #{Exception.format(:error, error, [])}" |> first_line())
+        %{
+          concurrency: concurrency,
+          shape: shape,
+          ok_count: length(ok_results),
+          error_count: length(error_results),
+          timeout_count: timeout_count,
+          latency_p50: maybe_percentile(sorted_total, 50),
+          latency_p95: maybe_percentile(sorted_total, 95),
+          latency_p99: maybe_percentile(sorted_total, 99),
+          pool_wait_p50: maybe_percentile(sorted_queue, 50),
+          pool_wait_p95: maybe_percentile(sorted_queue, 95),
+          pool_wait_p99: maybe_percentile(sorted_queue, 99)
+        }
       end)
-    end)
 
     Mix.shell().info("  (wall clock for this level: #{elapsed_ms}ms)")
+
+    shape_summaries
   end
 
   defp prepend_if_present(list, nil), do: list
   defp prepend_if_present(list, value), do: [value | list]
+
+  # Same nearest-rank percentile as `percentile/2`, but `nil` instead of
+  # raising on an empty sample list -- the structured report has to
+  # tolerate a shape with zero timing samples (e.g. every execution at
+  # that level hit a pool timeout before `query_time` was ever recorded)
+  # the same way `percentile_line/1` already does for the console.
+  defp maybe_percentile([], _p), do: nil
+  defp maybe_percentile(sorted_samples, p), do: percentile(sorted_samples, p)
 
   defp percentile_line([]), do: "n/a (no samples)"
 
@@ -346,4 +409,44 @@ defmodule Mix.Tasks.Stress.Load do
   defp format_ms(ms), do: Float.round(ms * 1.0, 2)
 
   defp first_line(text), do: text |> String.split("\n") |> List.first()
+
+  # A markdown table, not the console's per-level text block, is the
+  # saved artifact -- it's what makes two runs (before/after a driver
+  # change, say) diffable in a PR or pasteable into an issue, which
+  # scrollback from the console output above can't do.
+  defp write_report(path, run_info) do
+    File.mkdir_p!(Path.dirname(path))
+
+    header = """
+    # Stress Load Report
+
+    - Generated: #{Calendar.strftime(run_info.generated_at, "%Y-%m-%d %H:%M:%S UTC")}
+    - Host: #{run_info.host}:#{run_info.port}
+    - Concurrency levels: #{Enum.join(run_info.concurrency_levels, ", ")}
+    - Iterations per level (per worker): #{run_info.iterations_per_level}
+
+    | Concurrency | Shape | OK | Errors | Error % | Pool Timeouts | Latency p50 | Latency p95 | Latency p99 | Pool Wait p50 | Pool Wait p95 | Pool Wait p99 |
+    | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+    """
+
+    rows = run_info.shape_summaries |> Enum.map(&report_row/1) |> Enum.join("\n")
+
+    File.write!(path, header <> rows <> "\n")
+  end
+
+  defp report_row(summary) do
+    total = summary.ok_count + summary.error_count
+
+    error_pct =
+      if total == 0, do: "n/a", else: "#{Float.round(summary.error_count / total * 100, 2)}%"
+
+    "| #{summary.concurrency} | #{summary.shape} | #{summary.ok_count} | #{summary.error_count} | " <>
+      "#{error_pct} | #{summary.timeout_count} | #{report_ms(summary.latency_p50)} | " <>
+      "#{report_ms(summary.latency_p95)} | #{report_ms(summary.latency_p99)} | " <>
+      "#{report_ms(summary.pool_wait_p50)} | #{report_ms(summary.pool_wait_p95)} | " <>
+      "#{report_ms(summary.pool_wait_p99)} |"
+  end
+
+  defp report_ms(nil), do: "n/a"
+  defp report_ms(ms), do: format_ms(ms)
 end

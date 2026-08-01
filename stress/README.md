@@ -64,9 +64,13 @@ rationale (the repo's pool is sized to the highest concurrency level up
 front; undersizing it just measures pool-queue wait, not query time).
 
 Expect one block of output per concurrency level: per-shape count/errors
-and min/max/avg latency in milliseconds, plus the level's total wall-clock
-time. A later, separately-scoped task adds telemetry-based percentile/pool
-metrics on top of this basic output.
+and latency/pool-wait percentiles in milliseconds, plus the level's total
+wall-clock time. After all levels finish, a markdown report is also
+written (`--report-path`, default `reports/stress-report-<UTC
+timestamp>.md`) with a concurrency x shape table of ok/error counts,
+error rate, pool timeouts, and latency/pool-wait percentiles, so two runs
+(e.g. before/after a `ch_driver` change) can be diffed side by side later
+instead of only existing as terminal scrollback.
 
 ## Resource-constrained ClickHouse for stress runs
 

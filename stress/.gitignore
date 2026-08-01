@@ -16,5 +16,10 @@
 # If the VM crashes, it generates a dump, let's ignore it too.
 erl_crash.dump
 
+# Saved markdown reports from `mix stress.load` -- run artifacts, not
+# source, and every run without `--report-path` writes a new timestamped
+# file, so these shouldn't accumulate as tracked files.
+/reports/
+
 # Also ignore archive artifacts (built via "mix archive.build").
 *.ez
