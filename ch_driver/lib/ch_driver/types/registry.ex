@@ -9,7 +9,7 @@ defmodule ChDriver.Types.Registry do
 
   `UUID` values decode to their standard hyphenated text form. `IPv4`/`IPv6`
   decode to dotted-quad / colon-hex text. `DateTime` decodes to a UTC
-  `DateTime.t()`.
+  `DateTime.t()`. `Date` decodes to a `Date.t()`.
   """
 
   alias ChDriver.Protocol.Varint
@@ -29,6 +29,7 @@ defmodule ChDriver.Types.Registry do
   def column_codec("Float32"), do: {:fixed, 4, fn <<v::float-little-32>> -> v end}
   def column_codec("Float64"), do: {:fixed, 8, fn <<v::float-little-64>> -> v end}
   def column_codec("DateTime"), do: {:fixed, 4, &decode_datetime/1}
+  def column_codec("Date"), do: {:fixed, 2, &decode_date/1}
   def column_codec("String"), do: :string
   def column_codec("UUID"), do: {:fixed, 16, &decode_uuid/1}
   def column_codec("IPv4"), do: {:fixed, 4, &decode_ipv4/1}
@@ -51,6 +52,13 @@ defmodule ChDriver.Types.Registry do
   # an Elixir struct, matching how Ecto's built-in `:naive_datetime`/
   # `:utc_datetime` types expect a UTC `DateTime` to load from).
   defp decode_datetime(<<v::unsigned-little-32>>), do: DateTime.from_unix!(v, :second)
+
+  # ClickHouse's `Date` is a little-endian `UInt16` count of days since the
+  # Unix epoch (1970-01-01) -- `SELECT toUInt16(toDate('1970-01-02'))`
+  # returns `1`, matching the raw bytes on the wire. There's no time-of-day
+  # or timezone component (that's `DateTime`/`DateTime64`), so this always
+  # decodes to a plain `Date.t()`.
+  defp decode_date(<<v::unsigned-little-16>>), do: Date.add(~D[1970-01-01], v)
 
   defp decode_uuid(<<hi::binary-size(8), lo::binary-size(8)>>) do
     hex = Base.encode16(reverse_bytes(hi) <> reverse_bytes(lo), case: :lower)

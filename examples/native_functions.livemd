@@ -242,7 +242,7 @@ Only row 1 carries `utm_source=newsletter`, so this returns exactly one
 row, with `clean_url` showing `.../cart` (the `?utm_source=...&ref=...`
 suffix gone).
 
-## ClickHouse-native date/time bucketing -- and a real decode failure
+## ClickHouse-native date/time bucketing
 
 `toStartOfInterval/2` buckets a `DateTime` into fixed-width windows of
 any unit (`INTERVAL 4 hour` here, but `day`/`week`/`month`/... all work
@@ -286,39 +286,21 @@ MyApp.Repo.all(yyyymm_query)
 Two rows in January, one in February -- `[%{month: 202401, count: 2},
 %{month: 202402, count: 1}]`.
 
-Now the failure, reproduced rather than described secondhand.
-`toStartOfWeek/1` looks like the natural week-level equivalent of
-`toStartOfInterval`/`toYYYYMM` above -- except it returns ClickHouse's
-`Date` type (not `DateTime`), and `ch_driver`'s `NativeBlock` decoder has
-no clause for `Date` at all:
+`toStartOfWeek/1` is the natural week-level equivalent of
+`toStartOfInterval`/`toYYYYMM` above -- it returns ClickHouse's `Date`
+type (not `DateTime`), which `ch_driver`'s `NativeBlock` decoder handles
+natively too, decoding straight into an Elixir `Date.t()`:
 
 ```elixir
-try do
-  week_query = from(p in PageView, select: fragment("toStartOfWeek(?)", p.visited_at))
-  MyApp.Repo.all(week_query)
-rescue
-  e -> Exception.message(e)
-end
+week_query = from(p in PageView, select: fragment("toStartOfWeek(?)", p.visited_at))
+MyApp.Repo.all(week_query)
 ```
 
-```
-"socket error during query: {:unsupported_type, \"Date\"}"
-```
-
-That's a `DBConnection.ConnectionError` raised out of the wire-protocol
-decode, and it kills the underlying connection -- the pool reconnects
-transparently for the next query, but the query that hit it gets nothing
-back. The practical takeaway: any ClickHouse function whose return type is
-`Date` (as opposed to `DateTime`/`DateTime64`) is currently unusable
-through this adapter's `fragment/1`, full stop -- not a rendering
-limitation, a decode one. `toStartOfInterval`/`toYYYYMM` above were
-deliberately chosen because they sidestep this (`DateTime` in, `DateTime`
-or a plain integer out); reaching for `toDate/1`, `toStartOfWeek/1`,
-`toStartOfMonth/1`, or anything else documented as `Date`-returning will
-hit the same wall. Casting the result to a `DateTime` inside the fragment
-itself (`fragment("toDateTime(toStartOfWeek(?))", p.visited_at)`) is the
-workaround, staying entirely within functions this decoder already
-handles.
+`[~D[2024-01-14], ~D[2024-01-14], ~D[2024-01-28]]` -- the Monday starting
+each seeded row's week, one per row, returned as plain `Date.t()` values
+straight from the decoder. Any ClickHouse function whose return type is
+`Date` (`toDate/1`, `toStartOfMonth/1`, and so on) works the same way --
+no cast-to-`DateTime` workaround needed.
 
 ## Conditional logic and approximate aggregates
 
@@ -428,20 +410,16 @@ A few things worth knowing before reaching for `fragment/1` routinely:
   (`%{...}`) rather than a schema struct, so each field comes back as
   whatever Elixir type `ch_driver`'s `NativeBlock` decoder maps the
   underlying ClickHouse wire type to (a `String.t()` for `String`, an
-  `integer()` for `UInt32`, a `DateTime.t()` for `DateTime`, and so on)
-  -- there's no schema field type declaration involved to cast against,
-  so nothing coerces it further. Selecting a fragment result into an
-  actual schema field would run it through that field's declared Ecto
-  type's *loader* the normal way (for instance, a `UInt8`-returning
-  fragment loaded into a `:boolean` schema field goes through this
-  adapter's `0`/`1` -> `false`/`true` loader, same as any other
-  ClickHouse-backed boolean column) -- but a bare map or tuple select,
-  as used throughout this notebook, skips that step entirely and hands
-  back the decoder's native type as-is. The `Date`-decode failure above
-  is the sharper edge of this same fact: there's no schema-level
-  override available to work around a wire type the decoder doesn't
-  handle at all, only rewriting the fragment itself to avoid producing
-  that type in the first place.
+  `integer()` for `UInt32`, a `DateTime.t()` for `DateTime`, a `Date.t()`
+  for `Date`, and so on) -- there's no schema field type declaration
+  involved to cast against, so nothing coerces it further. Selecting a
+  fragment result into an actual schema field would run it through that
+  field's declared Ecto type's *loader* the normal way (for instance, a
+  `UInt8`-returning fragment loaded into a `:boolean` schema field goes
+  through this adapter's `0`/`1` -> `false`/`true` loader, same as any
+  other ClickHouse-backed boolean column) -- but a bare map or tuple
+  select, as used throughout this notebook, skips that step entirely and
+  hands back the decoder's native type as-is.
 
 Proving the keyword-fragment rejection rather than just asserting it:
 
