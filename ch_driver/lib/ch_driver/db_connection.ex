@@ -48,6 +48,7 @@ defmodule ChDriver.DBConnection do
            socket: conn.socket,
            server_info: conn.server_info,
            compression: conn.compression,
+           settings: conn.settings,
            opts: opts
          }}
 

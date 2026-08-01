@@ -174,6 +174,24 @@ defmodule ChDriver.Protocol.Messages do
   # string and the `'5'` value string.
   @custom_setting_flag 2
 
+  # A real per-query SETTINGS entry uses the *same* (name, flags, value)
+  # triple format as `@custom_setting_flag` query parameters, but with the
+  # CUSTOM bit (0x02) clear. BaseSettings<TTraits>::write's
+  # SettingsWriteFormat::STRINGS_WITH_FLAGS defines two flag bits on that
+  # byte: IMPORTANT (0x01 -- "a server that doesn't recognize this setting
+  # name should hard-fail instead of silently ignoring it") and CUSTOM
+  # (0x02 -- "this is a user-namespaced/query-parameter setting, not a
+  # real entry in the fixed Settings schema", see `@custom_setting_flag`).
+  # A genuine built-in setting like `async_insert` or `max_block_size`
+  # needs neither bit: flags 0. Verified empirically against a live
+  # ClickHouse server (not from documentation alone) two ways: sending
+  # `max_block_size` as a per-query setting with flags 0 measurably changes
+  # the number of Data blocks a large SELECT is chunked into, and sending
+  # `async_insert = 0` this way (instead of inlined in SQL text) makes a
+  # subsequent SELECT observe an INSERT synchronously. See
+  # `ch_driver/test/ch_driver/settings_test.exs`.
+  @setting_flag 0
+
   @doc """
   Encodes a Query packet for `query_string`.
 
@@ -184,6 +202,12 @@ defmodule ChDriver.Protocol.Messages do
       tuples binding `query_string`'s `{name:Type}` placeholders. Build
       these from Elixir values with `ChDriver.Params.text/1` and
       `ChDriver.Params.escape_rounds/1`. Defaults to `[]`.
+    * `:settings` -- a list of `{name, value}` pairs (both strings, or any
+      term `to_string/1` accepts) applying real ClickHouse server settings
+      to just this query, e.g. `settings: [{"async_insert", "0"}]` --
+      equivalent to inlining `SETTINGS async_insert = 0` into the SQL text,
+      but composable and independent of the query string. Defaults to
+      `[]`.
     * `:compression` -- `:none` (default) or `:lz4`. Setting this to `:lz4`
       tells the server that both directions of this query's block traffic
       (Data, ProfileEvents) will be wrapped in a
@@ -194,18 +218,38 @@ defmodule ChDriver.Protocol.Messages do
   def encode_query(query_string, opts \\ []) do
     query_id = Keyword.get(opts, :query_id, "")
     params = Keyword.get(opts, :params, [])
+    settings = Keyword.get(opts, :settings, [])
     compression_flag = compression_flag(Keyword.get(opts, :compression, :none))
 
     [
       Varint.encode(@client_query),
       Varint.encode_string(query_id),
       encode_client_info(),
-      Varint.encode_string(""),
+      encode_settings(settings),
       Varint.encode_string(""),
       Varint.encode(@query_stage_complete),
       Varint.encode(compression_flag),
       Varint.encode_string(query_string),
       encode_query_parameters(params)
+    ]
+  end
+
+  # Same wire shape as `encode_query_parameters/1` below (name/flags/value
+  # triples, terminated by an empty name), but with `@setting_flag` (0)
+  # instead of `@custom_setting_flag` -- see the comment above
+  # `@setting_flag` for why that distinction matters.
+  defp encode_settings(settings) do
+    [
+      Enum.map(settings, fn {name, value} -> encode_one_setting(name, value) end),
+      Varint.encode_string("")
+    ]
+  end
+
+  defp encode_one_setting(name, value) do
+    [
+      Varint.encode_string(to_string(name)),
+      Varint.encode(@setting_flag),
+      Varint.encode_string(to_string(value))
     ]
   end
 

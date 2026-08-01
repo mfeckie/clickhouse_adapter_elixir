@@ -15,13 +15,22 @@ defmodule ChDriver do
 
   `start_link/1` accepts all of `ChDriver.Connection.connect/1`'s options
   (`:hostname`, `:port`, `:database`, `:username`, `:password`,
-  `:connect_timeout`, `:recv_timeout`, `:compression`) plus the usual
-  `DBConnection.start_link/2` pool options (`:pool_size`, `:name`, etc.),
-  and forwards the connection options to every pooled connection.
+  `:connect_timeout`, `:recv_timeout`, `:compression`, `:settings`) plus
+  the usual `DBConnection.start_link/2` pool options (`:pool_size`,
+  `:name`, etc.), and forwards the connection options to every pooled
+  connection.
 
   `:compression` (`:none` by default, or `:lz4`) turns on wire compression
   for query result blocks. Set it once at pool start, or override it per
   call via `query/4`'s `opts`.
+
+  `:settings` (`[]` by default) applies real ClickHouse server settings
+  (e.g. `settings: [{"async_insert", "0"}]`) to every query run through
+  the pool by default. Set it once at pool start, or override/extend it
+  per call via `query/4`'s own `:settings` opt — a setting name given
+  per-call overrides the same name set at pool start, and anything only
+  set at pool start still applies. This replaces having to inline a
+  `SETTINGS x = y` clause into raw SQL text.
   """
 
   alias ChDriver.Query
@@ -51,6 +60,11 @@ defmodule ChDriver do
 
   `conn` is a pool started by `start_link/1`, or any `DBConnection`-compatible
   connection reference.
+
+  `opts[:settings]` (a list of `{name, value}` pairs, e.g.
+  `settings: [{"async_insert", "0"}]`) applies real ClickHouse server
+  settings to just this query, merged on top of (and overriding, by name)
+  whatever `start_link/1`'s own `:settings` set as the pool-wide default.
 
   Returns `{:ok, %ChDriver.Result{}}` or `{:error, reason}`.
   """

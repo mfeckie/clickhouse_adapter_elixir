@@ -56,8 +56,14 @@ defmodule ChDriver.Connection do
       compression for this connection's query result blocks. Acts as a
       per-connection default; `query/3`'s own `opts` can override it per
       call. Any other value raises `ArgumentError`.
+    * `:settings` - a list of `{name, value}` pairs applying real
+      ClickHouse server settings (e.g. `[{"async_insert", "0"}]`) to every
+      query run on this connection by default. Acts as a per-connection
+      default; `query/3`'s (and `start_stream/3`'s) own `:settings` opt is
+      merged on top, with same-named per-call settings overriding the
+      connection-level default. Defaults to `[]`.
 
-  Returns `{:ok, %{socket: socket, server_info: %ChDriver.Protocol.ServerHello{}, compression: :none | :lz4}}`
+  Returns `{:ok, %{socket: socket, server_info: %ChDriver.Protocol.ServerHello{}, compression: :none | :lz4, settings: [{binary, binary}]}}`
   on success, or `{:error, reason}` on failure. The caller owns the
   returned socket and is responsible for closing it with `close/1`.
   """
@@ -66,7 +72,8 @@ defmodule ChDriver.Connection do
            %{
              socket: :gen_tcp.socket(),
              server_info: Protocol.ServerHello.t(),
-             compression: ChDriver.Protocol.Block.Compressed.method()
+             compression: ChDriver.Protocol.Block.Compressed.method(),
+             settings: [{binary, binary}]
            }}
           | {:error, term}
   def connect(opts \\ []) do
@@ -79,6 +86,7 @@ defmodule ChDriver.Connection do
     recv_timeout = Keyword.get(opts, :recv_timeout, @default_recv_timeout)
     max_buffer_size = Keyword.get(opts, :max_buffer_size, @default_max_buffer_size)
     compression = validate_compression!(Keyword.get(opts, :compression, :none))
+    settings = Keyword.get(opts, :settings, [])
 
     tcp_opts = [:binary, packet: :raw, active: false]
 
@@ -91,7 +99,8 @@ defmodule ChDriver.Connection do
           password,
           recv_timeout,
           max_buffer_size,
-          compression
+          compression,
+          settings
         )
 
       {:error, reason} ->
@@ -104,6 +113,25 @@ defmodule ChDriver.Connection do
   defp validate_compression!(other) do
     raise ArgumentError,
           "invalid :compression option #{inspect(other)} -- must be :none or :lz4"
+  end
+
+  # Merges a per-call `:settings` list on top of the connection-level
+  # default, matching the same "per-call overrides connection default"
+  # precedence `:compression` already gets -- a name present in both keeps
+  # only the per-call value, everything else from each side survives.
+  # Deliberately NOT `Keyword.merge/2`: setting names arrive as arbitrary
+  # caller-supplied strings, and converting each one to an atom key (as
+  # `Keyword.merge/2` would require) would let unbounded, un-garbage-collected
+  # atoms accumulate from untrusted input over the life of the VM.
+  defp merge_settings(connection_default, per_call) do
+    per_call_names = MapSet.new(per_call, fn {name, _value} -> to_string(name) end)
+
+    kept_defaults =
+      Enum.reject(connection_default, fn {name, _value} ->
+        MapSet.member?(per_call_names, to_string(name))
+      end)
+
+    kept_defaults ++ per_call
   end
 
   # Performs the Hello/Addendum handshake on an already-open socket. If any
@@ -119,7 +147,8 @@ defmodule ChDriver.Connection do
          password,
          recv_timeout,
          max_buffer_size,
-         compression
+         compression,
+         settings
        ) do
     hello = Protocol.client_hello(database, username, password)
 
@@ -127,7 +156,8 @@ defmodule ChDriver.Connection do
          {:ok, server_info} <-
            receive_server_hello(socket, <<>>, recv_timeout, max_buffer_size),
          :ok <- send_addendum_if_required(socket) do
-      {:ok, %{socket: socket, server_info: server_info, compression: compression}}
+      {:ok,
+       %{socket: socket, server_info: server_info, compression: compression, settings: settings}}
     else
       {:error, reason} ->
         :gen_tcp.close(socket)
@@ -182,6 +212,11 @@ defmodule ChDriver.Connection do
   `opts[:compression]` (`:none` or `:lz4`) overrides the connection's
   default compression setting for this one query.
 
+  `opts[:settings]` (a list of `{name, value}` pairs) is merged on top of
+  the connection's own default `:settings` (from `connect/1`) — a setting
+  named here overrides a same-named connection-level default; anything
+  only set at the connection level still applies.
+
   Returns `{:ok, %{columns: [{name, type}], rows: [[term]]}}` or
   `{:error, term}` — either a socket error, or a `%ChDriver.Error{}` if
   ClickHouse rejected the query.
@@ -191,9 +226,13 @@ defmodule ChDriver.Connection do
     recv_timeout = Keyword.get(opts, :recv_timeout, @default_recv_timeout)
     max_buffer_size = Keyword.get(opts, :max_buffer_size, @default_max_buffer_size)
     compression = Keyword.get(opts, :compression, Map.get(conn, :compression, :none))
+    settings = merge_settings(Map.get(conn, :settings, []), Keyword.get(opts, :settings, []))
 
     packet = [
-      Protocol.encode_query(query_string, Keyword.put(opts, :compression, compression)),
+      Protocol.encode_query(
+        query_string,
+        opts |> Keyword.put(:compression, compression) |> Keyword.put(:settings, settings)
+      ),
       Protocol.encode_empty_data_packet(compression)
     ]
 
@@ -305,15 +344,22 @@ defmodule ChDriver.Connection do
   Returns `{:ok, stream}` or `{:error, reason}` (a socket error or a
   `%ChDriver.Error{}`, exactly like `query/3`). `stream` is opaque — pass
   it straight to `stream_fetch/2` and `cancel_stream/2`.
+
+  `opts[:settings]` is merged on top of the connection's own default
+  `:settings`, exactly like `query/3`'s.
   """
   @spec start_stream(map, binary, keyword) :: {:ok, map} | {:error, term}
   def start_stream(%{socket: socket} = conn, query_string, opts \\ []) do
     recv_timeout = Keyword.get(opts, :recv_timeout, @default_recv_timeout)
     max_buffer_size = Keyword.get(opts, :max_buffer_size, @default_max_buffer_size)
     compression = Keyword.get(opts, :compression, Map.get(conn, :compression, :none))
+    settings = merge_settings(Map.get(conn, :settings, []), Keyword.get(opts, :settings, []))
 
     packet = [
-      Protocol.encode_query(query_string, Keyword.put(opts, :compression, compression)),
+      Protocol.encode_query(
+        query_string,
+        opts |> Keyword.put(:compression, compression) |> Keyword.put(:settings, settings)
+      ),
       Protocol.encode_empty_data_packet(compression)
     ]
 

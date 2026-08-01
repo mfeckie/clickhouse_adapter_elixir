@@ -1,7 +1,7 @@
 defmodule ChDriver.MixProject do
   use Mix.Project
 
-  @version "0.1.2"
+  @version "0.2.0"
   # ch_driver is a sibling project inside the clickhouse_adapter_elixir repo,
   # not its own repo -- see adapter/mix.exs for the same convention.
   @source_url "https://github.com/mfeckie/clickhouse_adapter_elixir"
