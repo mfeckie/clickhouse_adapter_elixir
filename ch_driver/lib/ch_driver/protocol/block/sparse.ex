@@ -96,40 +96,64 @@ defmodule ChDriver.Protocol.Block.Sparse do
   # constant. Returns `{:ok, default}` or `:error` for any type without a
   # known default (surfaced by `decode_sparse/3` as a clear
   # `:unsupported_sparse_default` error rather than guessed at).
+  #
+  # Same two-step flat dispatch as
+  # `ChDriver.Protocol.NativeBlock.classify_type/1` +
+  # `decode_column_data/3`: try each `ChDriver.Types` wrapper parser in
+  # turn (flat list, no nesting) via `Enum.find_value/2`, normalize
+  # whichever one matches into a tagged tuple, then one flat `case` on
+  # that tuple -- falling back to `scalar_default_value/1` when none of
+  # the wrapper parsers match. Extending this with a new wrapper type
+  # means adding one entry to `wrapper_parsers` and one `case` clause,
+  # not another nesting level.
   defp default_value(type) do
-    case Types.parse_nullable(type) do
-      {:ok, _inner} ->
-        {:ok, nil}
-
-      :error ->
-        case Types.parse_array(type) do
-          {:ok, _inner} ->
-            {:ok, []}
-
-          :error ->
-            case Types.parse_map(type) do
-              {:ok, _key_type, _value_type} ->
-                {:ok, %{}}
-
-              :error ->
-                case Types.parse_low_cardinality(type) do
-                  {:ok, inner_type} ->
-                    default_value(inner_type)
-
-                  :error ->
-                    case Types.parse_decimal(type) do
-                      {:ok, _precision, scale} ->
-                        {:ok, Decimal.new(1, 0, -scale)}
-
-                      :error ->
-                        case Types.parse_fixed_string(type) do
-                          {:ok, size} -> {:ok, :binary.copy(<<0>>, size)}
-                          :error -> scalar_default_value(type)
-                        end
-                    end
-                end
-            end
+    wrapper_parsers = [
+      fn t ->
+        case Types.parse_nullable(t) do
+          {:ok, inner} -> {:nullable, inner}
+          :error -> nil
         end
+      end,
+      fn t ->
+        case Types.parse_array(t) do
+          {:ok, inner} -> {:array, inner}
+          :error -> nil
+        end
+      end,
+      fn t ->
+        case Types.parse_map(t) do
+          {:ok, key_type, value_type} -> {:map, key_type, value_type}
+          :error -> nil
+        end
+      end,
+      fn t ->
+        case Types.parse_low_cardinality(t) do
+          {:ok, inner} -> {:low_cardinality, inner}
+          :error -> nil
+        end
+      end,
+      fn t ->
+        case Types.parse_decimal(t) do
+          {:ok, precision, scale} -> {:decimal, precision, scale}
+          :error -> nil
+        end
+      end,
+      fn t ->
+        case Types.parse_fixed_string(t) do
+          {:ok, size} -> {:fixed_string, size}
+          :error -> nil
+        end
+      end
+    ]
+
+    case Enum.find_value(wrapper_parsers, fn parser -> parser.(type) end) do
+      {:nullable, _inner} -> {:ok, nil}
+      {:array, _inner} -> {:ok, []}
+      {:map, _key_type, _value_type} -> {:ok, %{}}
+      {:low_cardinality, inner_type} -> default_value(inner_type)
+      {:decimal, _precision, scale} -> {:ok, Decimal.new(1, 0, -scale)}
+      {:fixed_string, size} -> {:ok, :binary.copy(<<0>>, size)}
+      nil -> scalar_default_value(type)
     end
   end
 
