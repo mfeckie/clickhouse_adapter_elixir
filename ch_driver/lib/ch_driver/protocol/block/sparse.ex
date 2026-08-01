@@ -110,7 +110,10 @@ defmodule ChDriver.Protocol.Block.Sparse do
   # `false` as "keep scanning" -- doesn't stop at the first parser that
   # simply didn't match. Falls back to `scalar_default_value/1` once every
   # wrapper parser has missed. Extending this with a new wrapper type means
-  # adding one more attempt to the list, nothing else.
+  # adding one more attempt to the list, nothing else. (The list is built
+  # fresh on each call rather than hoisted to a module attribute: one
+  # attempt recurses into `default_value/1` itself, and a module attribute
+  # is evaluated before the function it would be referencing exists.)
   defp default_value(type) do
     wrapper_attempts = [
       fn t -> with {:ok, _inner} <- Types.parse_nullable(t), do: {:ok, nil} end,

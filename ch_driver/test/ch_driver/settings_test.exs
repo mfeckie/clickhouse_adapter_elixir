@@ -107,7 +107,8 @@ defmodule ChDriver.SettingsTest do
       {:ok, conn} = Connection.connect(settings: [{"max_block_size", "50"}])
       on_exit(fn -> Connection.close(conn.socket) end)
 
-      {:ok, stream} = Connection.start_stream(conn, "SELECT number FROM system.numbers LIMIT 1000")
+      {:ok, stream} =
+        Connection.start_stream(conn, "SELECT number FROM system.numbers LIMIT 1000")
 
       {blocks, total_rows} = drain(conn.socket, stream, 0, 0)
 
