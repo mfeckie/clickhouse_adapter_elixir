@@ -58,7 +58,7 @@ need to clone anything:
 
 ```elixir
 Mix.install([
-  {:clickhouse_adapter_ecto, "~> 0.1.0"}
+  {:clickhouse_adapter_ecto, "~> 0.2.0"}
 ])
 ```
 
@@ -226,10 +226,15 @@ full, current list.
 
 ## A JOIN example
 
-Only `:inner` and `:left` joins on an explicit `ON` condition are
-supported (`:right`/`:full`/`:cross` and ClickHouse-specific ASOF/semi/
-anti/lateral joins are not) -- the common case for `Ecto.Query`'s
-`join/4,5`. Set up two more tables, `posts` and `comments`:
+`:inner`, `:left`, `:right`, `:full`, and `:cross` joins are supported --
+`:inner`/`:left`/`:right`/`:full` on an explicit `ON` condition, `:cross`
+with none -- covering the common cases for `Ecto.Query`'s `join/4,5` and
+association-based (`join: assoc(...)`) queries. ClickHouse-specific
+ASOF/semi/anti joins are still out of scope. LATERAL joins
+(`:inner_lateral`/`:left_lateral`/`:cross_lateral`) raise a clear
+`Ecto.QueryError` rather than being silently mishandled, since ClickHouse
+has no LATERAL JOIN equivalent at all. Set up two more tables, `posts` and
+`comments`:
 
 ```elixir
 {:ok, _} =
@@ -292,12 +297,33 @@ join_query =
 MyApp.Repo.all(join_query)
 ```
 
-One real ClickHouse dialect difference worth knowing about even though it
-doesn't come up in this simple example: unlike Postgres/MySQL, a plain
-ClickHouse `LEFT JOIN` fills an unmatched right side with each column's
-*type default* (`""` for `String`, `0` for numeric types), not SQL
-`NULL`, unless the server has `join_use_nulls = 1` set. Code relying on
-`is_nil/1` against a left-joined column should account for this -- see
+`:right_join` and `:full_join` use the same `join/4,5` shape, just with a
+different join qualifier. To see one do something an `:inner`/`:left`
+join can't, seed a comment pointing at a post id that doesn't exist, then
+`:right_join` from `Post` onto `Comment` -- the unmatched comment still
+shows up, with the (nonexistent) post side filled in:
+
+```elixir
+MyApp.Repo.insert!(%Comment{id: 200, post_id: 99, body: "orphan comment, no matching post"})
+
+right_join_query =
+  from(p in Post,
+    right_join: c in Comment,
+    on: c.post_id == p.id,
+    order_by: c.id,
+    select: %{post_title: p.title, comment_body: c.body}
+  )
+
+MyApp.Repo.all(right_join_query)
+```
+
+One real ClickHouse dialect difference worth knowing about, and which the
+`:right_join` example above already ran into: unlike Postgres/MySQL, a
+plain ClickHouse `LEFT`/`RIGHT`/`FULL JOIN` fills an unmatched side with
+each column's *type default* (`""` for `String`, `0` for numeric types,
+as seen in `post_title: ""` above), not SQL `NULL`, unless the server has
+`join_use_nulls = 1` set. Code relying on `is_nil/1` against a joined
+column should account for this -- see
 `Ecto.Adapters.ClickHouse.Expression`'s moduledoc for the full note.
 
 ## GROUP BY / HAVING
