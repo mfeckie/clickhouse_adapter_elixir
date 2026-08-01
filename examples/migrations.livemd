@@ -1,0 +1,584 @@
+# Migrations with Ecto.Adapters.ClickHouse
+
+## What this is
+
+This notebook is a deep dive on one thing: writing and running real
+`Ecto.Migration` modules against ClickHouse through `Ecto.Migrator`, using
+`clickhouse_adapter_ecto`.
+
+Its sibling notebook, `getting_started.livemd`, deliberately sidesteps
+`Ecto.Migrator` -- it issues `CREATE TABLE` directly through a raw
+`ChDriver` connection to keep the CRUD/JOIN/streaming walkthrough short.
+This notebook does the opposite: every table here is created and dropped
+by an actual `Ecto.Migration` module, run via `Ecto.Migrator.run/4`,
+exactly as `mix ecto.migrate` would run it in a real Mix project.
+
+It walks through:
+
+* connecting a `Repo` and running migrations with `Ecto.Migrator.run/4`
+  in a standalone notebook (no `config.exs`, no `priv/repo/migrations`
+  directory -- migration modules are just defined inline),
+* the `ORDER BY`/`PRIMARY KEY` footgun from `getting_started.livemd`,
+  this time fixed via a proper `create table(...)` migration rather than
+  raw DDL,
+* the `table_options/1` helper for building `ENGINE`/`PARTITION BY`/
+  `ORDER BY`/`SETTINGS` from a keyword list instead of a hand-quoted
+  string,
+* `add/3` across a representative spread of ClickHouse column types,
+  including the ones with no built-in Ecto type (`LowCardinality`,
+  `FixedString`),
+* what's explicitly *not* implemented -- `:alter`, indexes, constraints --
+  and the real error raised when a migration tries anyway,
+* `supports_ddl_transaction?/0` returning `false`, demonstrated with a
+  migration that partially applies and what that leaves behind,
+* and reversing/dropping tables, both via `change/0` auto-reversal run
+  `:down` and via an explicit `drop table(...)` migration.
+
+Every code cell below has been run against a live, Dockerized ClickHouse
+instance and is known to work as written.
+
+### Prerequisites: getting ClickHouse running
+
+This notebook needs a real ClickHouse server on `localhost:9000` (the
+native protocol port). Any recent ClickHouse server will do; a minimal
+Docker Compose setup looks like:
+
+```yaml
+services:
+  clickhouse:
+    image: clickhouse/clickhouse-server:26.7
+    ports:
+      - "9000:9000" # native TCP protocol
+      - "8123:8123" # HTTP, handy for cross-checking with curl/ch
+    environment:
+      CLICKHOUSE_DB: default
+      CLICKHOUSE_USER: default
+      CLICKHOUSE_PASSWORD: ""
+```
+
+Save that as `docker-compose.yml` and run `docker compose up -d`, then
+wait for the `clickhouse` service to report healthy (`docker compose ps`)
+before continuing. (If you've cloned the
+[clickhouse_adapter_elixir](https://github.com/mfeckie/clickhouse_adapter_elixir)
+repo, its `clickhouse_adapter_ecto/docker-compose.yml` already has this,
+plus a Kafka broker used by that repo's own test suite -- not needed
+here.)
+
+This notebook creates its own tables (all prefixed `livemd_mig_`) and its
+own `schema_migrations` bookkeeping table, and drops everything again at
+the end, so it's safe to run against a ClickHouse instance you're also
+using for other things.
+
+## Installing dependencies
+
+Both packages are on Hex, so this notebook is fully standalone -- no need
+to clone anything:
+
+```elixir
+Mix.install([
+  {:clickhouse_adapter_ecto, "~> 0.2.0"}
+])
+```
+
+`ch_driver` (the native-protocol `DBConnection` driver this adapter is
+built on) isn't listed explicitly -- it resolves transitively as a Hex
+dependency of `clickhouse_adapter_ecto`.
+
+## Connecting a Repo and running migrations without a Mix project
+
+`Ecto.Migrator.run/4` is what `mix ecto.migrate` calls under the hood; it
+needs a started repo and a list of `{version, module}` pairs (normally
+discovered by scanning `priv/repo/migrations/*.exs` for their numeric
+filename prefix -- there's no such directory in a notebook, so the
+version numbers are supplied by hand, via `System.unique_integer/1`, one
+per cell that runs a migration below):
+
+```elixir
+defmodule MyApp.Repo do
+  use Ecto.Repo, otp_app: :clickhouse_adapter_ecto, adapter: Ecto.Adapters.ClickHouse
+end
+
+{:ok, _} =
+  MyApp.Repo.start_link(
+    hostname: "localhost",
+    port: 9000,
+    database: "default",
+    username: "default",
+    password: ""
+  )
+
+# A second, raw ChDriver connection used only to inspect ClickHouse's own
+# system tables (system.tables, SHOW CREATE TABLE) and to reset state
+# between sections -- Ecto.Migrator itself never needs this, it's purely
+# for this notebook's own bookkeeping/verification.
+{:ok, ddl_conn} = ChDriver.start_link(hostname: "localhost", port: 9000)
+
+for t <- ["livemd_mig_events", "livemd_mig_widgets", "livemd_mig_metrics", "schema_migrations"] do
+  ChDriver.query(ddl_conn, "DROP TABLE IF EXISTS #{t}")
+end
+
+:ok
+```
+
+The first migration that runs below will transparently create
+`schema_migrations` itself (`Ecto.Migrator` does this for any adapter);
+there's nothing ClickHouse-specific to set up for it beyond having a
+working `Repo`.
+
+## The `ORDER BY`/`PRIMARY KEY` footgun, via a real migration this time
+
+`getting_started.livemd` covers this in detail; the short version: a
+plain `create table(:things) do add :name, :string end`, with no
+`primary_key: false`, does *not* raise. `Ecto.Migration` injects its
+usual `add :id, :bigserial, primary_key: true` default, and this adapter
+happily turns that into `id UInt64 ... ORDER BY (id)` -- valid ClickHouse
+DDL, migration succeeds. What breaks is silent and happens later, at
+insert time: ClickHouse has no autoincrement, so an insert that omits
+`:id` (the normal "let the database generate it" pattern) writes `0` for
+every row instead of a fresh value, and ClickHouse never rejects the
+resulting duplicates either -- `ORDER BY`/`PRIMARY KEY` here is a
+sort/skip index for scans, not a uniqueness constraint.
+
+The fix is `primary_key: false` on `table/2`, an explicit
+application-supplied id column, and an explicit `options:` string for
+`ENGINE`/`ORDER BY` -- this time as an actual migration module run
+through `Ecto.Migrator`, not a raw `ChDriver.query/2` shortcut:
+
+```elixir
+defmodule CreateEvents do
+  use Ecto.Migration
+
+  def change do
+    create table(:livemd_mig_events,
+             primary_key: false,
+             options: "ENGINE = MergeTree ORDER BY id"
+           ) do
+      add(:id, :uuid, primary_key: true)
+      add(:name, :string)
+      add(:occurred_at, :utc_datetime)
+    end
+  end
+end
+
+events_version = System.unique_integer([:positive, :monotonic])
+
+Ecto.Migrator.run(MyApp.Repo, [{events_version, CreateEvents}], :up, all: true, log: false)
+```
+
+That returns `[<events_version>]` -- the list of migration versions that
+were actually run. Confirming the table really exists, via ClickHouse's
+own `system.tables`:
+
+```elixir
+{:ok, %{rows: rows}} =
+  ChDriver.query(
+    ddl_conn,
+    "SELECT 1 FROM system.tables WHERE database = currentDatabase() AND name = 'livemd_mig_events'"
+  )
+
+rows
+```
+
+`[[1]]` -- the table exists. See `Ecto.Adapters.ClickHouse`'s moduledoc
+and `Ecto.Adapters.ClickHouse.DDL`'s moduledoc for the full empirical
+write-up this section is based on, including why the schema on the other
+end needs a plain `:string` `:id` field rather than `Ecto.UUID`.
+
+## `table_options/1`: building `ENGINE`/`PARTITION BY`/`ORDER BY`/`SETTINGS` from a keyword list
+
+`options:` on `table/2` takes one raw string for everything after the
+column list. That's fine for a one-clause `"ENGINE = MergeTree ORDER BY
+id"`, but gets tedious and error-prone to hand-quote once `PARTITION BY`
+and several `SETTINGS` key/value pairs are involved (SETTINGS with string
+values need per-value single-quoting, for one).
+`Ecto.Adapters.ClickHouse.Migration.table_options/1` builds that string
+from a keyword list instead:
+
+```elixir
+alias Ecto.Adapters.ClickHouse.Migration, as: CHMigration
+
+defmodule CreateWidgets do
+  use Ecto.Migration
+  alias Ecto.Adapters.ClickHouse.Migration, as: CHMigration
+
+  def change do
+    create table(:livemd_mig_widgets,
+             primary_key: false,
+             options:
+               CHMigration.table_options(
+                 engine: "MergeTree",
+                 partition_by: "toYYYYMM(inserted_at)",
+                 order_by: "id",
+                 settings: [index_granularity: 8192]
+               )
+           ) do
+      add(:id, :uuid, primary_key: true)
+      add(:name, :string, null: false)
+      add(:inserted_at, :utc_datetime, null: false)
+    end
+  end
+end
+
+widgets_version = System.unique_integer([:positive, :monotonic])
+
+Ecto.Migrator.run(MyApp.Repo, [{widgets_version, CreateWidgets}], :up, all: true, log: false)
+```
+
+Note `null: false` on `:name` and `:inserted_at`: `PARTITION BY
+toYYYYMM(inserted_at)` requires `inserted_at` to be non-nullable --
+ClickHouse rejects a `Nullable` column inside a partition key expression
+outright (`allow_nullable_key` would need to be turned on for the whole
+table otherwise, which is rarely what's wanted). `:name` is given
+`null: false` here too, just to keep the column list realistic for
+`ORDER BY id, name`-style tables generally, though it isn't required by
+`PARTITION BY` the way `inserted_at` is.
+
+`CHMigration.table_options/1` renders exactly the string `options:`
+expects; confirming it round-tripped correctly via `SHOW CREATE TABLE`:
+
+```elixir
+{:ok, %{rows: rows}} = ChDriver.query(ddl_conn, "SHOW CREATE TABLE livemd_mig_widgets")
+rows
+```
+
+```
+[
+  [
+    "CREATE TABLE default.livemd_mig_widgets\n(\n    `id` UUID,\n    `name` String,\n    `inserted_at` DateTime\n)\nENGINE = MergeTree\nPARTITION BY toYYYYMM(inserted_at)\nORDER BY id\nSETTINGS index_granularity = 8192"
+  ]
+]
+```
+
+`table_options/1` also resolves `{:system, "ENV_VAR"}` setting values
+from the environment at migration-run time -- handy for credentials that
+shouldn't be committed as a literal string in a migration file (a
+Kafka-engine `kafka_broker_list`, for instance). See
+`Ecto.Adapters.ClickHouse.Migration`'s moduledoc for that example in
+full; it isn't repeated here since it needs a running Kafka broker to
+demonstrate end to end.
+
+## `add/3` across ClickHouse column types
+
+Most Ecto migration types map onto ClickHouse column types directly
+(`:integer` -> `Int32`, `:string` -> `String`, `:decimal` ->
+`Decimal(38, 9)`, `{:array, inner}` -> `Array(inner)`, and so on -- the
+full mapping is `Ecto.Adapters.ClickHouse.DDL.column_type!/1`). Two
+ClickHouse-specific types have no built-in Ecto equivalent and go through
+validated builders on `Ecto.Adapters.ClickHouse.Migration` instead of a
+hand-typed quoted atom:
+
+```elixir
+defmodule CreateMetrics do
+  use Ecto.Migration
+  alias Ecto.Adapters.ClickHouse.Migration, as: CHMigration
+
+  def change do
+    create table(:livemd_mig_metrics,
+             primary_key: false,
+             options: "ENGINE = MergeTree ORDER BY id"
+           ) do
+      add(:id, :uuid, primary_key: true)
+      add(:name, :string)
+      add(:count, :integer)
+      add(:amount, :decimal)
+      add(:tags, {:array, :string}, null: false)
+      add(:status, CHMigration.low_cardinality(:string), null: false)
+      add(:code, CHMigration.fixed_string(8))
+      add(:recorded_at, :utc_datetime_usec)
+    end
+  end
+end
+
+metrics_version = System.unique_integer([:positive, :monotonic])
+
+Ecto.Migrator.run(MyApp.Repo, [{metrics_version, CreateMetrics}], :up, all: true, log: false)
+```
+
+`:tags` and `:status` both need `null: false` for the same underlying
+reason: ClickHouse doesn't allow `Array(T)` or `LowCardinality(T)` to be
+wrapped in `Nullable(...)` at all (`Nullable(Array(String))` and
+`Nullable(LowCardinality(String))` are both rejected outright by the
+server) -- and every column this adapter generates is `Nullable` by
+default unless `null: false` says otherwise, matching every other Ecto
+adapter's own default. `:code` (a `FixedString(8)` built via
+`CHMigration.fixed_string(8)`) has no such restriction and stays
+nullable.
+
+Confirming the generated DDL:
+
+```elixir
+{:ok, %{rows: rows}} = ChDriver.query(ddl_conn, "SHOW CREATE TABLE livemd_mig_metrics")
+rows
+```
+
+```
+[
+  [
+    "CREATE TABLE default.livemd_mig_metrics\n(\n    `id` UUID,\n    `name` Nullable(String),\n    `count` Nullable(Int32),\n    `amount` Nullable(Decimal(38, 9)),\n    `tags` Array(String),\n    `status` LowCardinality(String),\n    `code` Nullable(FixedString(8)),\n    `recorded_at` Nullable(DateTime64(6))\n)\nENGINE = MergeTree\nORDER BY id\nSETTINGS index_granularity = 8192"
+  ]
+]
+```
+
+(The trailing `SETTINGS index_granularity = 8192` wasn't written by this
+migration -- ClickHouse's `SHOW CREATE TABLE` always echoes the table's
+effective `index_granularity`, including the server's own default, even
+when no `SETTINGS` clause was given.)
+
+`Map(K, V)` has no builder at all -- there's no validated helper for it,
+just the quoted-atom escape hatch directly: `add(:m, :"Map(String,
+UInt32)")`. See `Ecto.Adapters.ClickHouse.DDL`'s moduledoc, under
+"ClickHouse-specific column types", for the complete list and the
+reasoning behind the quoted-atom approach.
+
+## What's not implemented: `:alter`, indexes, constraints
+
+`Ecto.Adapters.ClickHouse.DDL` implements exactly two things: `create
+table(...)` (with plain `:add` column commands) and `drop table(...)`.
+That's deliberate, not a gap waiting to be filled incidentally -- the
+moduledoc is explicit that `:alter` (adding/removing/modifying columns on
+an existing table), indexes, and constraints are not implemented,
+because ClickHouse has no unique/foreign-key constraints at all, and its
+`ALTER TABLE` semantics don't map cleanly onto `Ecto.Migration.Table`'s
+`:alter` subcommands.
+
+Rather than guess at what the error looks like, here it is verbatim, from
+actually running an `:alter` migration against a live server:
+
+```elixir
+defmodule AddMetricUnit do
+  use Ecto.Migration
+
+  def change do
+    alter table(:livemd_mig_metrics) do
+      add(:unit, :string)
+    end
+  end
+end
+
+alter_version = System.unique_integer([:positive, :monotonic])
+
+try do
+  Ecto.Migrator.run(MyApp.Repo, [{alter_version, AddMetricUnit}], :up, all: true, log: false)
+rescue
+  e -> Exception.message(e)
+end
+```
+
+```
+"the ClickHouse adapter does not implement :alter (add/remove column) DDL yet for table \"livemd_mig_metrics\", even though ADD COLUMN/DROP COLUMN are conceptually safe to auto-reverse (synchronous, metadata-only) -- see this module's moduledoc. Use raw SQL via execute/1 for both the forward and reverse direction in the meantime: [{:add, :unit, :string, []}]"
+```
+
+That's an `ArgumentError` raised by `Ecto.Adapters.ClickHouse.DDL.execute_ddl/1`
+before any SQL is even sent to ClickHouse -- it's this adapter refusing
+to guess at DDL it doesn't yet generate correctly, not a ClickHouse
+server error. The message's own advice is the actual workaround: use a
+raw SQL string via `execute/1` (ClickHouse's `ALTER TABLE ... ADD
+COLUMN`/`DROP COLUMN` really are synchronous, metadata-only operations
+that work fine issued directly), as explicit `up/0` + `down/0` rather
+than `change/0` until this adapter implements `:alter` for real. Indexes
+and constraints hit the same "not implemented, use raw SQL" wall -- see
+`Ecto.Adapters.ClickHouse.DDL`'s moduledoc for the data-skipping-index
+(`minmax`/`set`/`bloom_filter`/...) and other raw-SQL examples in full.
+
+## `supports_ddl_transaction?/0` is `false` -- and what that actually means
+
+```elixir
+Ecto.Adapters.ClickHouse.supports_ddl_transaction?()
+```
+
+```
+false
+```
+
+ClickHouse has no transactional DDL at all -- there is no `BEGIN;
+CREATE TABLE ...; CREATE TABLE ...; COMMIT;` to fall back on the way
+Postgres migrations get for free. Practically, that means a migration
+with multiple DDL statements is **not atomic**: if the second `create
+table(...)` in a `change/0` fails, the first one has already been
+committed to the server and stays there, while `Ecto.Migrator` doesn't
+record this migration's version in `schema_migrations` (the whole
+migration function raised, so its version is never inserted) -- leaving
+the database in a half-migrated state that looks, from
+`schema_migrations`' point of view, exactly like the migration never ran
+at all.
+
+Proving this rather than just asserting it -- a migration that creates
+one valid table, then a second one whose `PARTITION BY` clause is invalid
+(a `Nullable` column used directly in a partition key, without
+`allow_nullable_key`):
+
+```elixir
+defmodule PartialFailure do
+  use Ecto.Migration
+
+  def change do
+    create table(:livemd_mig_ok, primary_key: false, options: "ENGINE = MergeTree ORDER BY id") do
+      add(:id, :uuid, primary_key: true)
+    end
+
+    # Nullable `:d` inside PARTITION BY is rejected by ClickHouse -- this
+    # statement fails *after* the table above was already created.
+    create table(:livemd_mig_bad,
+             primary_key: false,
+             options: "ENGINE = MergeTree PARTITION BY d ORDER BY id"
+           ) do
+      add(:id, :uuid, primary_key: true)
+      add(:d, :utc_datetime)
+    end
+  end
+end
+
+partial_version = System.unique_integer([:positive, :monotonic])
+
+partial_failure_message =
+  try do
+    Ecto.Migrator.run(MyApp.Repo, [{partial_version, PartialFailure}], :up, all: true, log: false)
+  rescue
+    e -> Exception.message(e)
+  end
+
+partial_failure_message
+```
+
+```
+"DB::Exception (code 44): DB::Exception: Partition key contains nullable columns, but merge tree setting `allow_nullable_key` is disabled\nQuery: CREATE TABLE \"livemd_mig_bad\" (\"id\" UUID, \"d\" Nullable(DateTime)) ENGINE = MergeTree PARTITION BY d ORDER BY id"
+```
+
+That failure is a real ClickHouse server error (unlike the `:alter` one
+above, which never reached the server). Checking what actually happened:
+`livemd_mig_ok` exists, `livemd_mig_bad` doesn't, and `schema_migrations`
+has no record of `partial_version` at all:
+
+```elixir
+{:ok, %{rows: ok_exists}} =
+  ChDriver.query(
+    ddl_conn,
+    "SELECT 1 FROM system.tables WHERE database = currentDatabase() AND name = 'livemd_mig_ok'"
+  )
+
+{:ok, %{rows: sm_rows}} =
+  ChDriver.query(ddl_conn, "SELECT version FROM schema_migrations WHERE version = #{partial_version}")
+
+{ok_exists, sm_rows}
+```
+
+```
+{[[1]], []}
+```
+
+`livemd_mig_ok` is really there (`[[1]]`), but `schema_migrations` has no
+row for `partial_version` (`[]`) -- so re-running this same migration
+would try to `CREATE TABLE livemd_mig_ok` again and fail with "table
+already exists", even though nothing here was ever recorded as
+successfully migrated. Postgres/MyXQL adapters wrap a whole migration in
+a DDL transaction specifically to avoid this half-applied state; there's
+no ClickHouse equivalent to wrap it in. The practical guidance: keep
+migrations to a single `create table`/`drop table` each wherever
+possible, so a failure can't leave a partially-applied *migration*
+behind (a single DDL statement is still all-or-nothing at the ClickHouse
+server level -- it's specifically *multiple* statements in one migration
+that this affects).
+
+```elixir
+ChDriver.query(ddl_conn, "DROP TABLE IF EXISTS livemd_mig_ok")
+:ok
+```
+
+## Reversing migrations: `change/0` auto-reversal and explicit `drop table`
+
+`create table(...)`/`drop table(...)` written via `change/0` (rather than
+separate `up/0`/`down/0` functions) are safe for `Ecto.Migrator` to
+auto-reverse -- `create table` inverts to `drop table` and vice versa.
+Running the `CreateEvents` migration from earlier back down, via
+`Ecto.Migrator.run/4` with direction `:down`:
+
+```elixir
+Ecto.Migrator.run(MyApp.Repo, [{events_version, CreateEvents}], :down, all: true, log: false)
+```
+
+```
+[<events_version>]
+```
+
+Confirming the table is actually gone and `schema_migrations` no longer
+lists this version (both checked directly against ClickHouse, not
+inferred from the migrator's return value alone):
+
+```elixir
+{:ok, %{rows: table_rows}} =
+  ChDriver.query(
+    ddl_conn,
+    "SELECT 1 FROM system.tables WHERE database = currentDatabase() AND name = 'livemd_mig_events'"
+  )
+
+{:ok, %{rows: version_rows}} =
+  ChDriver.query(ddl_conn, "SELECT version FROM schema_migrations WHERE version = #{events_version}")
+
+{table_rows, version_rows}
+```
+
+```
+{[], []}
+```
+
+Both empty: the table is dropped, and its version is gone from
+`schema_migrations`.
+
+A `drop table(...)` migration works the same way as any other migration
+-- run forward like `CreateWidgets` was above, just with `drop` instead
+of `create`:
+
+```elixir
+defmodule DropWidgets do
+  use Ecto.Migration
+
+  def change do
+    drop(table(:livemd_mig_widgets))
+  end
+end
+
+drop_widgets_version = System.unique_integer([:positive, :monotonic])
+
+Ecto.Migrator.run(MyApp.Repo, [{drop_widgets_version, DropWidgets}], :up, all: true, log: false)
+```
+
+`change/0` can auto-reverse this one too (running it `:down` re-creates
+`livemd_mig_widgets`), but reconstructing the *exact* original DDL
+(engine, partition key, sort key, settings) purely from having observed a
+`drop table(...)` isn't something `Ecto.Migrator` can do in general --
+for a `drop table` written via `change/0`, Ecto's own auto-reversal only
+works if the original `create table(...)` migration is still available to
+replay, which is the normal case in a real Mix project's migrations
+directory (both files coexist on disk) but doesn't apply to this
+notebook's inline, throwaway modules.
+
+## Cleaning up
+
+Drop everything this notebook created:
+
+```elixir
+for t <- ["livemd_mig_events", "livemd_mig_widgets", "livemd_mig_metrics", "schema_migrations"] do
+  ChDriver.query(ddl_conn, "DROP TABLE IF EXISTS #{t}")
+end
+
+:ok
+```
+
+## Where to go next
+
+* **`Ecto.Adapters.ClickHouse.DDL`'s moduledoc** -- the authoritative
+  list of what `create table/2`, `add/3`, `options:`, and
+  `table_options/1` support, the full raw-SQL recipes for data-skipping
+  indices/projections/Kafka-engine ingestion pipelines, and exactly which
+  DDL operations are safe to auto-reverse via `change/0` versus which
+  need explicit `up/0`/`down/0`.
+* **`Ecto.Adapters.ClickHouse.Migration`'s moduledoc** -- `fixed_string/1`,
+  `low_cardinality/1`, and the full `table_options/1` reference including
+  the `{:system, "ENV_VAR"}` credential-interpolation example.
+* **`getting_started.livemd`** -- this notebook's sibling: connecting a
+  `Repo`, CRUD, joins, `GROUP BY`/`HAVING`, and streaming with
+  `ChDriver.stream/4`, none of which is repeated here.
+* **the `clickhouse_adapter_ecto` package README** -- the full "what's
+  supported end to end" list, and why `Ecto.Adapters.SQL.Sandbox` doesn't
+  work with this adapter (`Ecto.Adapters.ClickHouse.TestCase` is the
+  alternative used for test isolation).
