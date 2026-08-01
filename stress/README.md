@@ -1,11 +1,15 @@
 # stress
 
-A private, unpublished sibling project (see `mix.exs`) that seeds a
-synthetic reporting-shaped dataset into ClickHouse for later stress-test/
-load-generation work. This project only generates and loads the data --
-the load-generating harness itself is separate, later work.
+A private, unpublished sibling project (see `mix.exs`) with two pieces:
+a seeder that loads a synthetic reporting-shaped dataset into ClickHouse
+(`mix stress.seed`), and a load-generation harness that drives concurrent
+dashboard-style Ecto queries against it (`mix stress.load`).
 
-It talks to ClickHouse directly via `ch_driver` (no Ecto), against the same
+The seeder talks to ClickHouse directly via `ch_driver` (no Ecto) -- bulk
+inserts don't need a query builder. The load harness talks through a real
+`Ecto.Repo`/`Ecto.Adapters.ClickHouse` (via the `clickhouse_adapter_ecto`
+path dependency), since the point there is exercising the real adapter and
+connection pool, not raw driver queries. Both target the same
 docker-compose instance `clickhouse_adapter_ecto`'s integration tests use.
 
 ## Schema and skew rationale
@@ -37,6 +41,32 @@ mix stress.seed --rows 5000000
 `--host`/`--port` default to `localhost`/`9000` (the docker-compose
 defaults). The task drops and recreates all three tables first, so it's
 safe to re-run.
+
+## Load-generation harness (`mix stress.load`)
+
+Requires the dataset to already be seeded (`mix stress.seed`) -- this task
+only queries what's there, it doesn't seed anything itself. From `stress/`:
+
+```bash
+mix stress.load
+mix stress.load --concurrency-levels 5,20,100 --iterations-per-level 50
+```
+
+Ramps through fixed concurrency levels (`--concurrency-levels`, default
+`10,50,200`), running `--iterations-per-level` (default `20`) query
+executions per concurrent worker at each level, cycling round-robin
+through 4 dashboard-style query shapes (region/traffic revenue, top
+product categories, per-user session summary, a heavier multi-dimension
+"detailed report"). See `Stress.Queries`'s moduledoc for the query shapes
+and `Mix.Tasks.Stress.Load`'s moduledoc for full option docs and -- important
+if you change `--concurrency-levels` -- the connection-pool-sizing
+rationale (the repo's pool is sized to the highest concurrency level up
+front; undersizing it just measures pool-queue wait, not query time).
+
+Expect one block of output per concurrency level: per-shape count/errors
+and min/max/avg latency in milliseconds, plus the level's total wall-clock
+time. A later, separately-scoped task adds telemetry-based percentile/pool
+metrics on top of this basic output.
 
 ## Resource-constrained ClickHouse for stress runs
 

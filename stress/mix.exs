@@ -33,7 +33,20 @@ defmodule Stress.MixProject do
       # project's own build unless something here also names it -- same
       # reasoning as clickhouse_adapter_ecto/mix.exs's own `:rustler` dep.
       {:rustler, ">= 0.0.0", optional: true},
-      {:ch_driver, path: "../ch_driver"}
+      {:ch_driver, path: "../ch_driver"},
+      # The load-generation harness (mix stress.load) drives real
+      # Ecto.Repo/Ecto.Query traffic against the seeded dataset, not raw
+      # ch_driver queries -- it exercises the adapter's connection pool the
+      # way an actual application would. `ecto`/`ecto_sql` are declared
+      # directly (not just pulled in transitively via
+      # clickhouse_adapter_ecto) because Mix deps aren't transitively
+      # "usable" the way a library's own modules are -- `use Ecto.Repo`/
+      # `use Ecto.Schema`/`import Ecto.Query` need these compiled into
+      # *this* project, same reasoning as clickhouse_adapter_ecto/mix.exs's
+      # own `ecto`/`ecto_sql` deps.
+      {:ecto, "~> 3.0"},
+      {:ecto_sql, "~> 3.0"},
+      {:clickhouse_adapter_ecto, path: "../clickhouse_adapter_ecto"}
     ]
   end
 end
