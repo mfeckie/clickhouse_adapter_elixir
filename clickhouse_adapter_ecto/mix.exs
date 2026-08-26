@@ -16,7 +16,17 @@ defmodule ClickhouseAdapterEcto.MixProject do
       elixirc_paths: elixirc_paths(Mix.env()),
       deps: deps(),
       description: "An Ecto adapter for ClickHouse that speaks its native TCP protocol.",
-      package: package()
+      package: package(),
+      docs: docs()
+    ]
+  end
+
+  defp docs do
+    [
+      main: "readme",
+      extras: ["README.md", "CHANGELOG.md"],
+      source_ref: "adapter-v#{@version}",
+      source_url: @source_url
     ]
   end
 

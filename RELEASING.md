@@ -163,11 +163,19 @@ The two `*_release.yml` workflows only run on their package's tag prefix
 secret to actually publish -- pushing a tag without that secret configured
 will fail at the `mix hex.publish` step rather than publish silently as
 some anonymous/unauthenticated package. `HEX_API_KEY` is configured on this
-repo as of the 0.1.0 releases; `clickhouse_adapter_ecto`'s went out through
-this exact CI path with no manual steps. ch_driver's didn't -- see the note
-under *Publish sequence* above about its checksum-step fix landing after
-0.1.0 was already published by hand, which means that job's automated path
-is still unproven by a real tag push.
+repo as of the 0.1.0 releases.
+
+Both packages publish end to end from a tag push alone, with no manual
+steps. ch_driver's `hex_publish` was first exercised this way by
+`ch_driver-v0.3.0`; earlier versions were published by hand, for the
+checksum reason described under *Publish sequence* above.
+
+**Publishing is gated on the ref being a tag.** Every step that needs one
+(`ch_driver_release.yml`'s release-asset upload and its `hex_publish` job,
+plus `clickhouse_adapter_ecto_release.yml`'s `hex_publish`) carries
+`if: startsWith(github.ref, 'refs/tags/')`. A `workflow_dispatch` run from
+a branch is therefore a dry run: ch_driver's matrix still cross-compiles
+every NIF target, but nothing is uploaded or published.
 
 ## Package naming
 
