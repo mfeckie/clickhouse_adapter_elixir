@@ -15,13 +15,9 @@ name: ch_driver release
 # package in the publish chain (ch_driver -> adapter, see RELEASING.md), so
 # it has no upstream Hex dependency to worry about ordering against.
 #
-# NOTE: the build_release job (NIF cross-compile matrix) has published real
-# release assets for ch_driver-v0.1.0. The hex_publish job below hasn't --
-# every real tag push hit the checksum-generation catch-22 the
-# FORCE_COMPILE env var now works around (see RELEASING.md's Publish
-# sequence section), and by the time that fix landed, ch_driver 0.1.0 was
-# already published by hand (mix hex.publish run locally, 2FA-gated). This
-# job's automated path is untested against a real tag push.
+# Publishing requires a tag: both the release-asset upload and the
+# hex_publish job below are gated on it. A workflow_dispatch run from a
+# branch only cross-compiles the NIF matrix.
 
 on:
   push:
@@ -96,6 +92,10 @@ jobs:
           path: ${{ steps.build-crate.outputs.file-path }}
 
       - name: Publish archives and packages
+        # Only a tag has a GitHub release to attach assets to; without this
+        # guard, action-gh-release fails with "GitHub Releases requires a
+        # tag" on a branch dispatch.
+        if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v3
         with:
           files: |
@@ -112,13 +112,11 @@ jobs:
   # ch_driver is the first package in the publish chain (ch_driver -> adapter,
   # see RELEASING.md) so it has no upstream Hex dependency to worry about
   # ordering against.
-  #
-  # NOTE: untested against a real tag push -- see the NOTE at the top of
-  # this file for why (ch_driver 0.1.0 was published by hand before the
-  # FORCE_COMPILE fix below existed).
   hex_publish:
     name: Publish ch_driver to Hex.pm
     needs: build_release
+    # Tags only: the checksum step below fetches this tag's release assets.
+    if: startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-22.04
     defaults:
       run:

@@ -17,19 +17,31 @@ defmodule ChDriver.MixProject do
       description:
         "DBConnection driver speaking ClickHouse's native TCP protocol, including its " <>
           "LZ4/CityHash compression NIF and compressed-block wire envelope.",
-      package: package()
+      package: package(),
+      docs: docs()
     ]
   end
 
   defp elixirc_paths(:test), do: ["lib", "test/support"]
   defp elixirc_paths(_), do: ["lib"]
 
+  defp docs do
+    [
+      main: "readme",
+      extras: ["README.md", "CHANGELOG.md"],
+      source_ref: "ch_driver-v#{@version}",
+      source_url: @source_url
+    ]
+  end
+
   defp package do
     [
       licenses: ["MIT"],
       links: %{"GitHub" => @source_url},
+      # Explicit list: this overrides Hex's default file set, so anything
+      # that should ship has to be named here.
       files: ~w(lib native/ch_driver_native/src native/ch_driver_native/Cargo.toml
-                 checksum-*.exs mix.exs README.md)
+                 checksum-*.exs mix.exs README.md CHANGELOG.md)
     ]
   end
 

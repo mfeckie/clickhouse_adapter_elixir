@@ -7,7 +7,8 @@ usable on its own, independent of Ecto: `ChDriver.start_link/1`,
 the whole public surface. Everything else (`ChDriver.DBConnection`,
 `ChDriver.Connection`, `ChDriver.Protocol`) is wiring underneath it.
 
-[`adapter`](../adapter) (`Ecto.Adapters.ClickHouse`) builds an Ecto adapter on
+[`clickhouse_adapter_ecto`](https://hexdocs.pm/clickhouse_adapter_ecto)
+(`Ecto.Adapters.ClickHouse`) builds an Ecto adapter on
 top of this driver -- `Ecto.Adapters.ClickHouse.Connection` implements
 `Ecto.Adapters.SQL.Connection` by driving a `%ChDriver.Query{}` through the
 normal `DBConnection` parse/encode/execute flow.
