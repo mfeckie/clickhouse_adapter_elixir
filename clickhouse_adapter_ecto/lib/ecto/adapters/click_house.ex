@@ -19,6 +19,24 @@ defmodule Ecto.Adapters.ClickHouse do
         username: "default",
         password: ""
 
+      # So the mix ecto.* tasks know which repo to act on.
+      config :my_app, ecto_repos: [MyApp.Repo]
+
+  Then start the repo under your application's supervision tree, which is
+  what actually starts the connection pool:
+
+      # lib/my_app/application.ex
+      def start(_type, _args) do
+        children = [
+          MyApp.Repo
+        ]
+
+        Supervisor.start_link(children, strategy: :one_for_one, name: MyApp.Supervisor)
+      end
+
+  Without it, every query fails with `could not lookup Ecto repo
+  MyApp.Repo because it was not started or it does not exist`.
+
   ## Migrations
 
   `mix ecto.gen.migration` and `mix ecto.migrate` work as usual.

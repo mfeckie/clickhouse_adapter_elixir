@@ -36,7 +36,33 @@ config :my_app, MyApp.Repo,
   database: "my_app_dev",
   username: "default",
   password: ""
+
+# So the mix ecto.* tasks know which repo to act on.
+config :my_app, ecto_repos: [MyApp.Repo]
 ```
+
+Then start the repo under your application's supervision tree:
+
+```elixir
+# lib/my_app/application.ex
+defmodule MyApp.Application do
+  use Application
+
+  @impl true
+  def start(_type, _args) do
+    children = [
+      MyApp.Repo
+    ]
+
+    Supervisor.start_link(children, strategy: :one_for_one, name: MyApp.Supervisor)
+  end
+end
+```
+
+This is the standard `Ecto.Repo` setup, nothing ClickHouse-specific, but
+it's the step that actually starts the connection pool. Without it every
+query fails with `could not lookup Ecto repo MyApp.Repo because it was
+not started or it does not exist`.
 
 A migration:
 
