@@ -78,9 +78,15 @@ defmodule ChDriver.Params do
   # the first entry alone would instead declare e.g.
   # `Map(String, Int64)` for `%{"count" => 42, "name" => "widget"}` and
   # fail deep in the server with a confusing "Cannot read Map from text"
-  # -- so this raises up front, naming the actual problem. Write such a
-  # map with an inline literal (or a `map(...)` call with per-value
-  # `CAST`s) instead of binding it.
+  # -- so this raises up front, naming the actual problem.
+  #
+  # The workaround the error suggests is a `map(...)` call with a *nested*
+  # pair of CASTs per value. The inner one is not redundant: ClickHouse
+  # only converts to a `Variant` "from types from this Variant", and
+  # `type/1` binds an Elixir integer as `Int64` and a boolean as `UInt8`
+  # -- neither of which is a member of, say,
+  # `Variant(Bool, Int32, String)`. So the value has to be cast to the
+  # exact member type first, then to the Variant.
   def type(map) when is_map(map) and not is_struct(map) do
     value_types = map |> Map.values() |> Enum.map(&type/1) |> Enum.uniq()
 
@@ -93,8 +99,11 @@ defmodule ChDriver.Params do
               "cannot bind a map with mixed value types (#{Enum.join(multiple, ", ")}) as a " <>
                 "ClickHouse query parameter: it would need a Map(String, Variant(...)) type, " <>
                 "and ClickHouse cannot parse a Variant-valued Map from parameter text. " <>
-                "Write it as an inline literal instead, e.g. " <>
-                "\"map('k', CAST(?, 'Variant(...)'))\", got #{inspect(map)}"
+                "Build it with map(...) and cast each value to its exact Variant member type " <>
+                "first, e.g. \"map(?, CAST(CAST(?, 'Int32'), 'Variant(Bool, Int32, String)'))\" " <>
+                "-- casting straight to the Variant fails, since ClickHouse only converts to a " <>
+                "Variant from a type already in it and this driver binds an Elixir integer as " <>
+                "Int64. Got #{inspect(map)}"
     end
   end
 

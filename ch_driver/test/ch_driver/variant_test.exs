@@ -175,6 +175,56 @@ defmodule ChDriver.VariantTest do
     assert rows == [[1, [true, 42, "hi"]], [2, []]]
   end
 
+  test "the documented workaround writes a heterogeneous map via map(...) with nested CASTs", %{
+    conn: conn,
+    table: table
+  } do
+    # A heterogeneous map can't be bound as a parameter at all (see
+    # `ChDriver.Params.type/1`, which raises for it). This pins the
+    # workaround that error message recommends, so the advice can't rot.
+    #
+    # The nested CAST is the non-obvious part: ClickHouse converts to a
+    # Variant only "from types from this Variant", and `Params.type/1`
+    # binds an Elixir integer as Int64 and a boolean as UInt8 -- neither is
+    # a member of Variant(Bool, Int32, String). Casting straight to the
+    # Variant fails with "Cannot convert type Int64 to Variant(...)", so
+    # each value is cast to its exact member type first.
+    assert {:ok, _} =
+             ChDriver.query(
+               conn,
+               "CREATE TABLE #{table} (id UInt32, details Map(String, #{@variant})) " <>
+                 "ENGINE = Memory",
+               [],
+               settings: [{"enable_variant_type", "1"}]
+             )
+
+    member_type = fn
+      value when is_boolean(value) -> "Bool"
+      value when is_integer(value) -> "Int32"
+      value when is_binary(value) -> "String"
+    end
+
+    details = %{"ok" => true, "count" => 42, "name" => "widget"}
+
+    {pairs, params} =
+      details
+      |> Enum.map(fn {key, value} ->
+        {"?, CAST(CAST(?, '#{member_type.(value)}'), '#{@variant}')", [key, value]}
+      end)
+      |> Enum.unzip()
+
+    assert {:ok, _} =
+             ChDriver.query(
+               conn,
+               "INSERT INTO #{table} VALUES (?, map(#{Enum.join(pairs, ", ")}))",
+               [1 | List.flatten(params)],
+               settings: [{"enable_variant_type", "1"}]
+             )
+
+    assert {:ok, %{rows: [[1, ^details]]}} =
+             ChDriver.query(conn, "SELECT id, details FROM #{table}")
+  end
+
   test "a Bool column decodes to a boolean", %{conn: conn, table: table} do
     assert {:ok, _} =
              ChDriver.query(
