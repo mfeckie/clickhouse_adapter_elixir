@@ -158,6 +158,45 @@ defmodule ChDriver.TypesTest do
     end
   end
 
+  describe "parse_tuple/1" do
+    test "parses the element types in wire order" do
+      assert Types.parse_tuple("Tuple(Int32, String)") == {:ok, ["Int32", "String"]}
+    end
+
+    test "strips element names" do
+      assert Types.parse_tuple("Tuple(a Int32, b String)") == {:ok, ["Int32", "String"]}
+    end
+
+    test "does not split a parameterized element on its own comma" do
+      assert Types.parse_tuple("Tuple(Int32, Map(String, Int32))") ==
+               {:ok, ["Int32", "Map(String, Int32)"]}
+    end
+
+    test "keeps a parameterized element whose args contain a space intact" do
+      # The space here is inside the type's own arguments, not a name.
+      assert Types.parse_tuple("Tuple(Decimal(10, 2), String)") ==
+               {:ok, ["Decimal(10, 2)", "String"]}
+    end
+
+    test "strips a name from a parameterized element" do
+      assert Types.parse_tuple("Tuple(amount Decimal(10, 2), label String)") ==
+               {:ok, ["Decimal(10, 2)", "String"]}
+    end
+
+    test "parses a nested wrapper element verbatim" do
+      assert Types.parse_tuple("Tuple(Array(LowCardinality(String)), String)") ==
+               {:ok, ["Array(LowCardinality(String))", "String"]}
+    end
+
+    test "parses a single-element Tuple" do
+      assert Types.parse_tuple("Tuple(String)") == {:ok, ["String"]}
+    end
+
+    test "errors for a non-Tuple type" do
+      assert Types.parse_tuple("Nullable(String)") == :error
+    end
+  end
+
   describe "parse_datetime64/1" do
     test "parses the precision" do
       assert Types.parse_datetime64("DateTime64(3)") == {:ok, 3}
