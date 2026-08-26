@@ -227,9 +227,11 @@ adding a new type:
 - `ChDriver.Types.Registry` — the scalar/fixed-width codec table
   (`column_codec/1`) and primitive wire readers. Add a new scalar type here.
 - `ChDriver.Protocol.Block.Wrappers` — decoders for `Nullable(T)`,
-  `Array(T)`, `Map(K, V)`, `LowCardinality(T)`, `Decimal(P, S)`. Add a new
-  wrapper/compound decoder here, plus a dispatch clause in
-  `NativeBlock.decode_column_data/3` and a parser in `ChDriver.Types`.
+  `Array(T)`, `Map(K, V)`, `LowCardinality(T)`, `Variant(T1, ..., Tn)`,
+  `Decimal(P, S)`. Add a new wrapper/compound decoder here, plus a dispatch
+  clause in `NativeBlock.decode_column_data/4` and a parser in
+  `ChDriver.Types`. If the new type carries a serialization prefix, it also
+  needs a clause in `NativeBlock.decode_prefixes/2` — see below.
 - `ChDriver.Protocol.Block.Sparse` — MergeTree's sparse column
   serialization.
 
@@ -246,6 +248,47 @@ Only a pragmatic subset of ClickHouse's type system is supported — enough
 for the query shapes this driver and the Ecto adapter built on top of it
 actually need, plus the handful of scalar types ClickHouse's own
 ProfileEvents packets carry alongside every query result.
+
+### Serialization prefixes are hoisted to the front of the column
+
+This one cost real debugging time, and it had been silently corrupting
+`Array(LowCardinality(String))` results long before `Variant` support made
+it impossible to ignore.
+
+Two types carry a fixed 8-byte *serialization prefix* ahead of their row
+data: `LowCardinality(T)`'s dictionary key version, and `Variant(...)`'s
+discriminator mode. The trap is that ClickHouse writes **every prefix in a
+column's type tree before any of that column's data**, depth-first — not
+immediately before the sub-stream each prefix describes.
+
+So `Array(LowCardinality(String))` is on the wire as:
+
+```
+[LC key version][array offsets][LC index flags, dictionary, indexes]
+```
+
+and *not* the nesting-shaped `[array offsets][LC key version][...]`. Reading
+the key version inline (which is what the type nesting naturally suggests,
+and what this driver originally did) consumes the first 8 bytes of the
+array's own offsets. That doesn't raise — the offsets are still 8-byte
+little-endian integers, they're just the *wrong* ones — so the rows come
+back mis-split instead: `[['a','b','a'], []]` decoded as
+`[['a'], ['b','a']]`. Silent, plausible-looking, wrong data.
+
+`Map(LowCardinality(String), LowCardinality(String))` makes the ordering
+explicit: *both* key versions come first, back to back, then the map's
+offsets, then each dictionary.
+
+Hence the two-phase decode:
+
+1. `NativeBlock.decode_prefixes/2` walks the type tree depth-first and
+   consumes every prefix up front, returning them as a flat list.
+2. `NativeBlock.decode_column_data/4` decodes the data, popping prefixes off
+   that list in the same depth-first order.
+
+A zero-row block writes no prefixes at all (consistent with
+`LowCardinality` writing none of its other header fields either), so phase
+one is skipped entirely when `num_rows` is 0.
 
 ### Wire formats worth remembering
 
@@ -276,6 +319,38 @@ ProfileEvents packets carry alongside every query result.
   indices into the dictionary. A zero-row block writes none of these
   fields at all — parsing them unconditionally on an empty "header" block
   hangs the connection waiting for bytes that were never sent.
+  Note `key_version` is a *hoisted prefix*, not part of this contiguous run
+  — see the section above.
+- **`Variant(T1, ..., Tn)`**: a hoisted 8-byte discriminator-mode prefix
+  (see above), then one discriminator byte per row, then one contiguous
+  sub-column per alternative *in alternative order*, each holding only the
+  rows that selected it. A discriminator is the 0-based index of the active
+  alternative, or `255` (`NULL_DISCRIMINATOR`) for no value.
+
+  Two consequences worth spelling out. First, the alternative order that
+  the discriminator indexes into is the order in the *type name as reported
+  on the wire* — ClickHouse normalizes a `Variant`'s alternatives into
+  sorted order when it resolves the type, so `Variant(String, Int32)` in
+  DDL comes back as `Variant(Int32, String)` and discriminator `0` means
+  `Int32`. Always index off the wire type string, never off the DDL.
+  Second, an alternative that no row selected contributes *zero bytes*, so
+  the discriminators must be tallied to size each sub-column before any of
+  them can be read — which is why this can't be a row-at-a-time decode.
+- **`DateTime64(P)`** / **`DateTime64(P, 'TZ')`**: a *signed* little-endian
+  `Int64` count of 10^-P-second ticks since the Unix epoch. Signed, unlike
+  plain `DateTime`'s `UInt32`, so pre-epoch instants are negative ticks.
+  The timezone argument affects only display/parsing, never the stored
+  ticks, so decoding ignores it. Decoded into a UTC `DateTime.t()` whose
+  `:microsecond` precision is `min(P, 6)` — `P` is preserved as-is below 6
+  rather than widened, and truncated above it, since Elixir's `DateTime`
+  has no nanosecond field. The seconds/sub-seconds split uses
+  floor division so a negative tick count still yields a non-negative
+  microsecond remainder (truncating toward zero would land a pre-epoch
+  value one second off).
+- **`Bool`**: a single byte, 0 or 1 — ClickHouse's `Bool` is an alias for
+  `UInt8` constrained to those values. Decoded to an Elixir boolean.
+  (Note the Ecto adapter's own `:boolean` DDL maps to `UInt8`, not `Bool`,
+  and coerces `0`/`1` in its loader; both paths work.)
 - **`Decimal(P, S)`**: a fixed-width signed little-endian integer holding
   the unscaled value. Byte width is chosen from precision `P` alone (never
   stored on the wire) via ClickHouse's own precision tiers: ≤9 → 4 bytes,

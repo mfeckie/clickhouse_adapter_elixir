@@ -4,12 +4,17 @@ defmodule ChDriver.Types.Registry do
   readers it's built on.
 
   Covers ClickHouse's fixed-width integer and float types, `String`,
-  `DateTime`, `Enum8`/`Enum16`, `UUID`, `IPv4`, and `IPv6`. Adding a new
-  scalar type is a one-line addition to `column_codec/1`.
+  `Bool`, `DateTime`, `Enum8`/`Enum16`, `UUID`, `IPv4`, and `IPv6`. Adding
+  a new scalar type is a one-line addition to `column_codec/1`.
 
   `UUID` values decode to their standard hyphenated text form. `IPv4`/`IPv6`
   decode to dotted-quad / colon-hex text. `DateTime` decodes to a UTC
-  `DateTime.t()`. `Date` decodes to a `Date.t()`.
+  `DateTime.t()`. `Date` decodes to a `Date.t()`. `Bool` decodes to a
+  boolean.
+
+  `DateTime64(P)` is parameterized by its precision, so it can't be a
+  fixed entry in `column_codec/1`'s table -- it's dispatched from
+  `ChDriver.Protocol.NativeBlock` through `decode_datetime64/2` instead.
   """
 
   alias ChDriver.Protocol.Varint
@@ -31,6 +36,7 @@ defmodule ChDriver.Types.Registry do
   def column_codec("DateTime"), do: {:fixed, 4, &decode_datetime/1}
   def column_codec("Date"), do: {:fixed, 2, &decode_date/1}
   def column_codec("String"), do: :string
+  def column_codec("Bool"), do: {:fixed, 1, &decode_bool/1}
   def column_codec("UUID"), do: {:fixed, 16, &decode_uuid/1}
   def column_codec("IPv4"), do: {:fixed, 4, &decode_ipv4/1}
   def column_codec("IPv6"), do: {:fixed, 16, &decode_ipv6/1}
@@ -52,6 +58,47 @@ defmodule ChDriver.Types.Registry do
   # an Elixir struct, matching how Ecto's built-in `:naive_datetime`/
   # `:utc_datetime` types expect a UTC `DateTime` to load from).
   defp decode_datetime(<<v::unsigned-little-32>>), do: DateTime.from_unix!(v, :second)
+
+  # ClickHouse's `Bool` is stored as a single byte, 0 or 1 (it's literally
+  # an alias for `UInt8` constrained to those two values), so this maps
+  # non-zero to `true` rather than matching only on `1`.
+  defp decode_bool(<<0>>), do: false
+  defp decode_bool(<<_nonzero>>), do: true
+
+  @doc """
+  Decodes a `DateTime64(P)` tick count of `precision` decimal places into
+  a UTC `DateTime.t()`.
+
+  Unlike plain `DateTime`'s unsigned whole-second `UInt32`, `DateTime64`
+  is a *signed* little-endian `Int64` count of 10^-P-second ticks since
+  the Unix epoch, so it covers pre-epoch instants (negative ticks) as
+  well as sub-second resolution.
+
+  Elixir's `DateTime` only carries microsecond resolution, so a precision
+  above 6 (e.g. `DateTime64(9)`'s nanoseconds) is truncated -- toward
+  negative infinity via `Integer.floor_div/2`, so that a pre-epoch value's
+  microsecond remainder stays non-negative and the reconstructed
+  `DateTime` is still the correct instant rather than one second off. The
+  reported microsecond precision is capped at 6 for the same reason,
+  while a lower precision is preserved as-is (a `DateTime64(3)` value
+  loads back as `{ms * 1000, 3}`, not silently widened to `6`).
+  """
+  def decode_datetime64(<<ticks::signed-little-64>>, precision) do
+    ticks_per_second = Integer.pow(10, precision)
+    seconds = Integer.floor_div(ticks, ticks_per_second)
+    remainder = ticks - seconds * ticks_per_second
+
+    microsecond =
+      cond do
+        precision == 0 -> 0
+        precision <= 6 -> remainder * Integer.pow(10, 6 - precision)
+        true -> Integer.floor_div(remainder, Integer.pow(10, precision - 6))
+      end
+
+    seconds
+    |> DateTime.from_unix!(:second)
+    |> Map.put(:microsecond, {microsecond, min(precision, 6)})
+  end
 
   # ClickHouse's `Date` is a little-endian `UInt16` count of days since the
   # Unix epoch (1970-01-01) -- `SELECT toUInt16(toDate('1970-01-02'))`

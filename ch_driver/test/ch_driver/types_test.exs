@@ -132,4 +132,51 @@ defmodule ChDriver.TypesTest do
       assert Types.parse_decimal("UInt32") == :error
     end
   end
+
+  describe "parse_variant/1" do
+    test "parses the alternatives in type-name order" do
+      assert Types.parse_variant("Variant(Bool, Int32, String)") ==
+               {:ok, ["Bool", "Int32", "String"]}
+    end
+
+    test "does not split a parameterized alternative on its own comma" do
+      assert Types.parse_variant("Variant(Int32, Decimal(10, 2))") ==
+               {:ok, ["Int32", "Decimal(10, 2)"]}
+    end
+
+    test "parses a nested wrapper alternative verbatim" do
+      assert Types.parse_variant("Variant(Array(UInt8), LowCardinality(String))") ==
+               {:ok, ["Array(UInt8)", "LowCardinality(String)"]}
+    end
+
+    test "parses a single-alternative Variant" do
+      assert Types.parse_variant("Variant(String)") == {:ok, ["String"]}
+    end
+
+    test "errors for a non-Variant type" do
+      assert Types.parse_variant("Nullable(String)") == :error
+    end
+  end
+
+  describe "parse_datetime64/1" do
+    test "parses the precision" do
+      assert Types.parse_datetime64("DateTime64(3)") == {:ok, 3}
+      assert Types.parse_datetime64("DateTime64(0)") == {:ok, 0}
+      assert Types.parse_datetime64("DateTime64(9)") == {:ok, 9}
+    end
+
+    test "ignores the timezone argument, which doesn't affect the stored ticks" do
+      assert Types.parse_datetime64("DateTime64(3, 'Europe/London')") == {:ok, 3}
+      assert Types.parse_datetime64("DateTime64(6,'UTC')") == {:ok, 6}
+    end
+
+    test "errors for second-precision DateTime, which has its own codec" do
+      assert Types.parse_datetime64("DateTime") == :error
+      assert Types.parse_datetime64("DateTime('UTC')") == :error
+    end
+
+    test "errors for a malformed precision" do
+      assert Types.parse_datetime64("DateTime64(abc)") == :error
+    end
+  end
 end

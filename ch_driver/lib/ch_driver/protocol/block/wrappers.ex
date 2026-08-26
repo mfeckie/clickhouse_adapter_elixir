@@ -1,7 +1,8 @@
 defmodule ChDriver.Protocol.Block.Wrappers do
   @moduledoc """
   Decoders for ClickHouse's wrapper and compound column types: `Nullable(T)`,
-  `Array(T)`, `Map(K, V)`, `LowCardinality(T)`, and `Decimal(P, S)`.
+  `Array(T)`, `Map(K, V)`, `LowCardinality(T)`, `Variant(T1, ..., Tn)`, and
+  `Decimal(P, S)`.
 
   Dispatched from `ChDriver.Protocol.NativeBlock`'s `decode_column_data/3`,
   which these functions recurse back into for their inner type(s) — that's
@@ -10,18 +11,24 @@ defmodule ChDriver.Protocol.Block.Wrappers do
 
   `Map(K, V)` values decode to plain Elixir maps; `Array(T)` and
   `LowCardinality(T)` decode to lists; `Nullable(T)` decodes to the inner
-  value or `nil`; `Decimal(P, S)` decodes to a `Decimal.t()`. See
+  value or `nil`; `Variant(...)` decodes to whichever alternative each row
+  selected (or `nil`); `Decimal(P, S)` decodes to a `Decimal.t()`. See
   `ARCHITECTURE.md` for the wire-level byte layouts.
+
+  Each decoder takes and returns the hoisted serialization-prefix list —
+  see `ChDriver.Protocol.NativeBlock`'s moduledoc for why prefixes are read
+  up front rather than inline.
   """
 
   alias ChDriver.Protocol.NativeBlock
   alias ChDriver.Types.Registry
 
   @doc false
-  def decode_nullable(inner_type, num_rows, binary) do
+  def decode_nullable(inner_type, num_rows, binary, prefixes) do
     with {:ok, null_map, rest} <-
            Registry.decode_fixed_width(binary, num_rows, 1, fn <<v::8>> -> v end),
-         {:ok, values, rest} <- NativeBlock.decode_column_data(inner_type, num_rows, rest) do
+         {:ok, values, rest, prefixes} <-
+           NativeBlock.decode_column_data(inner_type, num_rows, rest, prefixes) do
       combined =
         null_map
         |> Enum.zip(values)
@@ -30,18 +37,18 @@ defmodule ChDriver.Protocol.Block.Wrappers do
           {0, value} -> value
         end)
 
-      {:ok, combined, rest}
+      {:ok, combined, rest, prefixes}
     end
   end
 
   @doc false
-  def decode_array(inner_type, num_rows, binary) do
+  def decode_array(inner_type, num_rows, binary, prefixes) do
     with {:ok, offsets, rest} <-
            Registry.decode_fixed_width(binary, num_rows, 8, fn <<v::unsigned-little-64>> -> v end),
          total_elements = List.last(offsets, 0),
-         {:ok, flat_values, rest} <-
-           NativeBlock.decode_column_data(inner_type, total_elements, rest) do
-      {:ok, split_by_offsets(flat_values, offsets), rest}
+         {:ok, flat_values, rest, prefixes} <-
+           NativeBlock.decode_column_data(inner_type, total_elements, rest, prefixes) do
+      {:ok, split_by_offsets(flat_values, offsets), rest, prefixes}
     end
   end
 
@@ -62,31 +69,109 @@ defmodule ChDriver.Protocol.Block.Wrappers do
   end
 
   @doc false
-  def decode_map(key_type, value_type, num_rows, binary) do
+  def decode_map(key_type, value_type, num_rows, binary, prefixes) do
     with {:ok, offsets, rest} <-
            Registry.decode_fixed_width(binary, num_rows, 8, fn <<v::unsigned-little-64>> -> v end),
          total_elements = List.last(offsets, 0),
-         {:ok, flat_keys, rest} <- NativeBlock.decode_column_data(key_type, total_elements, rest),
-         {:ok, flat_values, rest} <-
-           NativeBlock.decode_column_data(value_type, total_elements, rest) do
+         {:ok, flat_keys, rest, prefixes} <-
+           NativeBlock.decode_column_data(key_type, total_elements, rest, prefixes),
+         {:ok, flat_values, rest, prefixes} <-
+           NativeBlock.decode_column_data(value_type, total_elements, rest, prefixes) do
       entries = Enum.zip(flat_keys, flat_values)
       rows = split_by_offsets(entries, offsets)
-      {:ok, Enum.map(rows, &Map.new/1), rest}
+      {:ok, Enum.map(rows, &Map.new/1), rest, prefixes}
     end
   end
 
-  @doc false
-  def decode_low_cardinality(_inner_type, 0, binary), do: {:ok, [], binary}
+  # The discriminator byte a `Variant` row carries when it holds no value
+  # at all (ClickHouse's `NULL_DISCRIMINATOR`); any other value is a
+  # 0-based index into the alternatives, in type-name order.
+  @null_discriminator 255
 
-  def decode_low_cardinality(inner_type, _num_rows, binary) do
-    with {:ok, [_key_version], rest} <-
+  @doc """
+  Decodes a `Variant(T1, ..., Tn)` column: one discriminator byte per row
+  (the 0-based index of the alternative that row holds, in the type name's
+  order, or `255` for no value), followed by one contiguous sub-column per
+  alternative, in alternative order, holding *only* the rows that selected
+  it.
+
+  An alternative no row selected contributes zero bytes, so the
+  discriminators have to be counted before any sub-column can be read —
+  which is exactly why this can't be a streaming per-row decode.
+
+  `Variant`'s own 8-byte discriminator-mode prefix was already consumed by
+  `ChDriver.Protocol.NativeBlock.decode_prefixes/2`, so it's popped off
+  `prefixes` here rather than read from `binary`.
+  """
+  def decode_variant(alternatives, num_rows, binary, prefixes) do
+    {_mode, prefixes} = pop_prefix(prefixes)
+
+    with {:ok, discriminators, rest} <-
+           Registry.decode_fixed_width(binary, num_rows, 1, fn <<v::8>> -> v end),
+         {:ok, sub_columns, rest, prefixes} <-
+           decode_variant_sub_columns(alternatives, discriminators, rest, prefixes) do
+      {:ok, interleave_variant(discriminators, sub_columns), rest, prefixes}
+    end
+  end
+
+  # Decodes each alternative's sub-column, sized by how many rows chose
+  # that alternative, returning them keyed by discriminator index.
+  defp decode_variant_sub_columns(alternatives, discriminators, binary, prefixes) do
+    counts = Enum.frequencies(discriminators)
+
+    alternatives
+    |> Enum.with_index()
+    |> Enum.reduce_while({:ok, %{}, binary, prefixes}, fn {alternative, index},
+                                                          {:ok, acc, rest, prefixes} ->
+      case NativeBlock.decode_column_data(
+             alternative,
+             Map.get(counts, index, 0),
+             rest,
+             prefixes
+           ) do
+        {:ok, values, rest, prefixes} ->
+          {:cont, {:ok, Map.put(acc, index, values), rest, prefixes}}
+
+        other ->
+          {:halt, other}
+      end
+    end)
+  end
+
+  # Walks the discriminators in row order, taking the next value from
+  # whichever alternative's sub-column that row pointed at.
+  defp interleave_variant(discriminators, sub_columns) do
+    {values, _remaining} =
+      Enum.map_reduce(discriminators, sub_columns, fn
+        @null_discriminator, remaining ->
+          {nil, remaining}
+
+        discriminator, remaining ->
+          [value | rest] = Map.fetch!(remaining, discriminator)
+          {value, Map.put(remaining, discriminator, rest)}
+      end)
+
+    values
+  end
+
+  defp pop_prefix([prefix | rest]), do: {prefix, rest}
+  defp pop_prefix([]), do: {nil, []}
+
+  @doc false
+  def decode_low_cardinality(_inner_type, 0, binary, prefixes), do: {:ok, [], binary, prefixes}
+
+  def decode_low_cardinality(inner_type, _num_rows, binary, prefixes) do
+    # The 8-byte dictionary key version was already consumed as a hoisted
+    # prefix (see `ChDriver.Protocol.NativeBlock`'s moduledoc), so decoding
+    # starts at the per-block index type/flags word.
+    {_key_version, prefixes} = pop_prefix(prefixes)
+
+    with {:ok, [index_type_and_flags], rest} <-
            Registry.decode_fixed_width(binary, 1, 8, fn <<v::unsigned-little-64>> -> v end),
-         {:ok, [index_type_and_flags], rest} <-
-           Registry.decode_fixed_width(rest, 1, 8, fn <<v::unsigned-little-64>> -> v end),
          {:ok, [dictionary_size], rest} <-
            Registry.decode_fixed_width(rest, 1, 8, fn <<v::unsigned-little-64>> -> v end),
-         {:ok, dictionary, rest} <-
-           NativeBlock.decode_column_data(inner_type, dictionary_size, rest),
+         {:ok, dictionary, rest, prefixes} <-
+           NativeBlock.decode_column_data(inner_type, dictionary_size, rest, prefixes),
          {:ok, [index_count], rest} <-
            Registry.decode_fixed_width(rest, 1, 8, fn <<v::unsigned-little-64>> -> v end),
          index_byte_size = index_byte_size(index_type_and_flags),
@@ -94,7 +179,7 @@ defmodule ChDriver.Protocol.Block.Wrappers do
            Registry.decode_fixed_width(rest, index_count, index_byte_size, &decode_unsigned_le/1) do
       dictionary_tuple = List.to_tuple(dictionary)
       values = Enum.map(indexes, &elem(dictionary_tuple, &1))
-      {:ok, values, rest}
+      {:ok, values, rest, prefixes}
     end
   end
 
