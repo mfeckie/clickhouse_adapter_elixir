@@ -12,6 +12,28 @@ defmodule ChDriver.Protocol.NativeBlock do
   `ChDriver.Protocol.Block.Wrappers` for compound types like `Array`,
   `Map`, and `Nullable`. If you're adding support for a new ClickHouse
   type, `ARCHITECTURE.md` has the map of which module owns what.
+
+  ## Serialization prefixes are hoisted to the front of the column
+
+  Some types carry a fixed-size *serialization prefix* ahead of their row
+  data: `LowCardinality(T)` an 8-byte dictionary key version, and
+  `Variant(...)` an 8-byte discriminator mode. The non-obvious part is
+  that ClickHouse writes every prefix in a column's type tree *before*
+  any of that column's data, not immediately before the sub-column the
+  prefix belongs to.
+
+  So `Array(LowCardinality(String))` is `[LC key version][array
+  offsets][LC dictionary + indexes]`, **not** `[array offsets][LC key
+  version][LC dictionary + indexes]`. Reading the prefix inline (where
+  the nesting would suggest) consumes the first 8 bytes of the *offsets*
+  instead, which silently mis-splits the rows rather than failing loudly.
+
+  That's why decoding is two-phase: `decode_prefixes/2` walks the type
+  tree depth-first and consumes every prefix up front, then
+  `decode_column_data/4` decodes the data with those prefix values passed
+  back in, popping them in the same depth-first order they were read.
+  A zero-row block carries no prefixes at all, so phase one is skipped
+  entirely in that case.
   """
 
   alias ChDriver.Protocol.Block.Sparse
@@ -159,6 +181,70 @@ defmodule ChDriver.Protocol.NativeBlock do
   defp decode_maybe_sparse(true, type, num_rows, binary),
     do: Sparse.decode_sparse(type, num_rows, binary)
 
+  @doc """
+  Consumes the hoisted serialization prefixes for `type` from the front of
+  `binary` (see the moduledoc for why they're all up front rather than
+  inline), returning `{:ok, prefixes, rest}` where `prefixes` is the
+  depth-first-ordered list of prefix values.
+
+  Types with no prefix of their own still recurse into their inner types,
+  since a nested `LowCardinality`/`Variant` anywhere in the tree
+  contributes one.
+  """
+  def decode_prefixes(type, binary) do
+    cond_attempts = [
+      fn t ->
+        with {:ok, inner} <- Types.parse_nullable(t), do: decode_prefixes(inner, binary)
+      end,
+      fn t ->
+        with {:ok, inner} <- Types.parse_array(t), do: decode_prefixes(inner, binary)
+      end,
+      fn t ->
+        with {:ok, key_type, value_type} <- Types.parse_map(t) do
+          with {:ok, key_prefixes, rest} <- decode_prefixes(key_type, binary),
+               {:ok, value_prefixes, rest} <- decode_prefixes(value_type, rest) do
+            {:ok, key_prefixes ++ value_prefixes, rest}
+          end
+        end
+      end,
+      fn t ->
+        with {:ok, inner} <- Types.parse_low_cardinality(t) do
+          # LowCardinality's own 8-byte dictionary key version comes
+          # first, then any prefix its inner type contributes.
+          with {:ok, [key_version], rest} <- read_u64(binary),
+               {:ok, inner_prefixes, rest} <- decode_prefixes(inner, rest) do
+            {:ok, [key_version | inner_prefixes], rest}
+          end
+        end
+      end,
+      fn t ->
+        with {:ok, alternatives} <- Types.parse_variant(t) do
+          # Variant's own 8-byte discriminator mode comes first, then each
+          # alternative's prefixes in alternative order.
+          with {:ok, [mode], rest} <- read_u64(binary) do
+            Enum.reduce_while(alternatives, {:ok, [mode], rest}, fn alternative,
+                                                                    {:ok, acc, rest} ->
+              case decode_prefixes(alternative, rest) do
+                {:ok, prefixes, rest} -> {:cont, {:ok, acc ++ prefixes, rest}}
+                other -> {:halt, other}
+              end
+            end)
+          end
+        end
+      end
+    ]
+
+    Enum.find_value(cond_attempts, fn attempt ->
+      case attempt.(type) do
+        :error -> nil
+        result -> result
+      end
+    end) || {:ok, [], binary}
+  end
+
+  defp read_u64(binary),
+    do: Registry.decode_fixed_width(binary, 1, 8, fn <<v::unsigned-little-64>> -> v end)
+
   # Flat, single-pass dispatch: try each `ChDriver.Types` wrapper parser in
   # turn (via `Enum.find_value/2`) and call its matching
   # `ChDriver.Protocol.Block.Wrappers` decoder right in the same closure,
@@ -175,30 +261,69 @@ defmodule ChDriver.Protocol.NativeBlock do
   # place that needs a matching clause.
   @doc false
   def decode_column_data(type, num_rows, binary) do
+    # Standalone entry point (used by `Sparse` and the tests): read this
+    # type's hoisted prefixes, then decode the data with them.
+    with {:ok, prefixes, rest} <- prefixes_for(type, num_rows, binary),
+         {:ok, values, rest, _leftover} <- decode_column_data(type, num_rows, rest, prefixes) do
+      {:ok, values, rest}
+    end
+  end
+
+  # A zero-row column carries no prefix bytes at all.
+  defp prefixes_for(_type, 0, binary), do: {:ok, [], binary}
+  defp prefixes_for(type, _num_rows, binary), do: decode_prefixes(type, binary)
+
+  @doc """
+  Decodes `num_rows` rows of `type` from `binary`, consuming any hoisted
+  serialization prefixes from `prefixes` (in the depth-first order
+  `decode_prefixes/2` produced them).
+
+  Returns `{:ok, values, rest, remaining_prefixes}`.
+  """
+  def decode_column_data(type, num_rows, binary, prefixes) do
     wrapper_attempts = [
       fn t ->
         with {:ok, inner} <- Types.parse_nullable(t),
-             do: Wrappers.decode_nullable(inner, num_rows, binary)
+             do: Wrappers.decode_nullable(inner, num_rows, binary, prefixes)
       end,
       fn t ->
         with {:ok, inner} <- Types.parse_array(t),
-             do: Wrappers.decode_array(inner, num_rows, binary)
+             do: Wrappers.decode_array(inner, num_rows, binary, prefixes)
       end,
       fn t ->
         with {:ok, key_type, value_type} <- Types.parse_map(t),
-             do: Wrappers.decode_map(key_type, value_type, num_rows, binary)
+             do: Wrappers.decode_map(key_type, value_type, num_rows, binary, prefixes)
       end,
       fn t ->
         with {:ok, inner} <- Types.parse_low_cardinality(t),
-             do: Wrappers.decode_low_cardinality(inner, num_rows, binary)
+             do: Wrappers.decode_low_cardinality(inner, num_rows, binary, prefixes)
+      end,
+      fn t ->
+        with {:ok, alternatives} <- Types.parse_variant(t),
+             do: Wrappers.decode_variant(alternatives, num_rows, binary, prefixes)
       end,
       fn t ->
         with {:ok, precision, scale} <- Types.parse_decimal(t),
-             do: Wrappers.decode_decimal(precision, scale, num_rows, binary)
+             do:
+               with_no_prefix(
+                 Wrappers.decode_decimal(precision, scale, num_rows, binary),
+                 prefixes
+               )
+      end,
+      fn t ->
+        with {:ok, precision} <- Types.parse_datetime64(t) do
+          unpack = &Registry.decode_datetime64(&1, precision)
+
+          with_no_prefix(
+            Registry.decode_fixed_width(binary, num_rows, 8, unpack),
+            prefixes
+          )
+        end
       end,
       fn t ->
         with {:ok, size} <- Types.parse_fixed_string(t),
-             do: Registry.decode_fixed_width(binary, num_rows, size, & &1)
+             do:
+               with_no_prefix(Registry.decode_fixed_width(binary, num_rows, size, & &1), prefixes)
       end
     ]
 
@@ -207,8 +332,13 @@ defmodule ChDriver.Protocol.NativeBlock do
         :error -> nil
         result -> result
       end
-    end) || decode_plain(type, num_rows, binary)
+    end) || with_no_prefix(decode_plain(type, num_rows, binary), prefixes)
   end
+
+  # Threads `prefixes` through unchanged for the leaf/prefix-less decoders,
+  # which consume no prefix of their own.
+  defp with_no_prefix({:ok, values, rest}, prefixes), do: {:ok, values, rest, prefixes}
+  defp with_no_prefix(other, _prefixes), do: other
 
   defp decode_plain(type, num_rows, binary) do
     case Registry.column_codec(type) do

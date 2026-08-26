@@ -8,7 +8,8 @@ defmodule ChDriver.Types do
   column decoding.
 
   Supports `Nullable(T)`, `Array(T)`, `Map(K, V)`, `LowCardinality(T)`,
-  `Decimal(P, S)` (and its `Decimal32/64/128/256(S)` aliases), and
+  `Variant(T1, ..., Tn)`, `Decimal(P, S)` (and its
+  `Decimal32/64/128/256(S)` aliases), `DateTime64(P[, 'TZ'])`, and
   `FixedString(N)`. `Tuple(...)` isn't supported as a standalone column
   type — only as `Map`'s internal representation.
   """
@@ -103,6 +104,44 @@ defmodule ChDriver.Types do
   defp do_split_top_level_comma([char | rest], depth, current, acc) do
     do_split_top_level_comma(rest, depth, [char | current], acc)
   end
+
+  @doc """
+  Parses ClickHouse's `Variant(T1, ..., Tn)` syntax, returning `{:ok,
+  [type_string]}` with the alternatives in the order they appear in the
+  type name -- which is exactly the order the wire discriminator byte
+  indexes into (ClickHouse normalizes a `Variant`'s alternatives into
+  sorted order when it resolves the type, so the name as reported on the
+  wire is authoritative, not the order originally written in DDL).
+
+  Splits on top-level commas only, so a parameterized alternative like
+  `Variant(Int32, Decimal(10, 2))` isn't split on the inner comma.
+  """
+  def parse_variant(type) do
+    with {:ok, inner} <- strip_wrapper(type, "Variant("),
+         parts when is_list(parts) <- split_top_level_comma(inner) do
+      {:ok, Enum.map(parts, &String.trim/1)}
+    else
+      _ -> :error
+    end
+  end
+
+  @doc """
+  Parses ClickHouse's `DateTime64(P)` and `DateTime64(P, 'Timezone')`
+  types, returning `{:ok, precision}`.
+
+  The timezone argument is deliberately discarded: it only affects how
+  ClickHouse *displays* and *parses* the value, never the stored tick
+  count, which is always an offset from the (timezone-agnostic) Unix
+  epoch. Decoding therefore only needs the precision.
+  """
+  def parse_datetime64("DateTime64(" <> rest) do
+    case Regex.run(~r/^(\d+)\s*(?:,.*)?\)$/s, rest) do
+      [_, precision] -> {:ok, String.to_integer(precision)}
+      nil -> :error
+    end
+  end
+
+  def parse_datetime64(_type), do: :error
 
   @doc "Parses ClickHouse's `FixedString(N)` type, returning `{:ok, n}`."
   def parse_fixed_string("FixedString(" <> rest) do

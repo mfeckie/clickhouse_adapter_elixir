@@ -43,16 +43,71 @@ defmodule ChDriver.Params do
   def type(bool) when is_boolean(bool), do: "UInt8"
   def type(%Decimal{}), do: "String"
   def type(%Date{}), do: "Date"
-  def type(%NaiveDateTime{}), do: "DateTime"
-  def type(%DateTime{}), do: "DateTime"
+
+  # A sub-second timestamp has to declare `DateTime64(P)`, not `DateTime`:
+  # `text/1` renders the fractional part (dropping it would silently
+  # truncate the caller's value), and ClickHouse's `DateTime` parameter
+  # parser rejects any text it can't consume *completely* -- "Value
+  # 2024-03-15 12:34:56.789789 cannot be parsed as DateTime ... only 19 of
+  # 26 bytes was parsed". The declared precision matches the digits
+  # `text/1` actually emits, so the two can't drift apart.
+  def type(%NaiveDateTime{} = ndt), do: datetime_type(ndt.microsecond)
+  def type(%DateTime{} = dt), do: datetime_type(dt.microsecond)
+
   def type([]), do: "Array(String)"
   def type([head | _]), do: "Array(#{type(head)})"
+
+  # An empty map has no entry to infer a value type from; `String` is the
+  # same conservative default `type([])` picks for an empty list, and an
+  # empty `Map(String, String)` literal casts cleanly to any `Map(K, V)`
+  # column ClickHouse might compare it against.
+  def type(map) when is_map(map) and not is_struct(map) and map_size(map) == 0,
+    do: "Map(String, String)"
+
+  # ClickHouse `Map` keys are always `String` in practice for the shapes
+  # this driver binds (Elixir map keys reaching here are atoms or strings),
+  # the value type is inferred from the entries -- the same inference
+  # `type([head | _])` does for arrays, but checked across *every* entry
+  # rather than trusting the first.
+  #
+  # That check matters because a heterogeneous map cannot be bound as a
+  # parameter at all. Its ClickHouse type would be
+  # `Map(String, Variant(...))`, and ClickHouse refuses to CAST a `String`
+  # literal to a `Variant`-valued Map at all ("Unsupported types to CAST
+  # AS Map"), so no parameter text exists that could work. Inferring from
+  # the first entry alone would instead declare e.g.
+  # `Map(String, Int64)` for `%{"count" => 42, "name" => "widget"}` and
+  # fail deep in the server with a confusing "Cannot read Map from text"
+  # -- so this raises up front, naming the actual problem. Write such a
+  # map with an inline literal (or a `map(...)` call with per-value
+  # `CAST`s) instead of binding it.
+  def type(map) when is_map(map) and not is_struct(map) do
+    value_types = map |> Map.values() |> Enum.map(&type/1) |> Enum.uniq()
+
+    case value_types do
+      [single] ->
+        "Map(String, #{single})"
+
+      multiple ->
+        raise ArgumentError,
+              "cannot bind a map with mixed value types (#{Enum.join(multiple, ", ")}) as a " <>
+                "ClickHouse query parameter: it would need a Map(String, Variant(...)) type, " <>
+                "and ClickHouse cannot parse a Variant-valued Map from parameter text. " <>
+                "Write it as an inline literal instead, e.g. " <>
+                "\"map('k', CAST(?, 'Variant(...)'))\", got #{inspect(map)}"
+    end
+  end
 
   def type(other) do
     raise ArgumentError,
           "the ClickHouse adapter does not know how to bind #{inspect(other)} as a query " <>
             "parameter"
   end
+
+  # Elixir renders a `{value, 0}` microsecond field as no fractional digits
+  # at all, which is exactly ClickHouse's whole-second `DateTime`.
+  defp datetime_type({_value, 0}), do: "DateTime"
+  defp datetime_type({_value, precision}), do: "DateTime64(#{precision})"
 
   @doc """
   Renders an Elixir term as ClickHouse literal text — the same text you'd
@@ -96,6 +151,20 @@ defmodule ChDriver.Params do
     IO.iodata_to_binary([?[, Enum.map_intersperse(list, ?,, &array_element_text/1), ?]])
   end
 
+  # ClickHouse's `Map(K, V)` literal syntax (`{'k1':v1, 'k2':v2}`), with
+  # keys and any string values individually quoted/escaped exactly like
+  # `Array(T)`'s elements above.
+  def text(map) when is_map(map) and not is_struct(map) do
+    entries =
+      map
+      |> Map.to_list()
+      |> Enum.map_intersperse(?,, fn {key, value} ->
+        [array_element_text(to_string(key)), ?:, array_element_text(value)]
+      end)
+
+    IO.iodata_to_binary([?{, entries, ?}])
+  end
+
   def text(other) do
     raise ArgumentError,
           "don't know how to bind #{inspect(other)} as a ClickHouse query parameter"
@@ -114,6 +183,7 @@ defmodule ChDriver.Params do
   """
   @spec escape_rounds(term) :: 1 | 2
   def escape_rounds(list) when is_list(list), do: 1
+  def escape_rounds(map) when is_map(map) and not is_struct(map), do: 1
   def escape_rounds(_other), do: 2
 
   @doc false

@@ -122,9 +122,19 @@ defmodule ChDriver.Protocol.Block.Sparse do
       fn t ->
         with {:ok, inner_type} <- Types.parse_low_cardinality(t), do: default_value(inner_type)
       end,
+      # A `Variant`'s default is "no value at all" -- the same thing its
+      # `255` NULL discriminator means -- regardless of the alternatives.
+      fn t -> with {:ok, _alternatives} <- Types.parse_variant(t), do: {:ok, nil} end,
       fn t ->
         with {:ok, _precision, scale} <- Types.parse_decimal(t),
              do: {:ok, Decimal.new(1, 0, -scale)}
+      end,
+      fn t ->
+        with {:ok, precision} <- Types.parse_datetime64(t) do
+          {:ok,
+           DateTime.from_unix!(0, :second)
+           |> Map.put(:microsecond, {0, min(precision, 6)})}
+        end
       end,
       fn t ->
         with {:ok, size} <- Types.parse_fixed_string(t), do: {:ok, :binary.copy(<<0>>, size)}
@@ -145,6 +155,7 @@ defmodule ChDriver.Protocol.Block.Sparse do
   defp scalar_default_value(type) when type in @integer_types, do: {:ok, 0}
   defp scalar_default_value(type) when type in @float_types, do: {:ok, 0.0}
   defp scalar_default_value("String"), do: {:ok, ""}
+  defp scalar_default_value("Bool"), do: {:ok, false}
   defp scalar_default_value("UUID"), do: {:ok, "00000000-0000-0000-0000-000000000000"}
   defp scalar_default_value("IPv4"), do: {:ok, "0.0.0.0"}
   defp scalar_default_value("IPv6"), do: {:ok, "::"}
