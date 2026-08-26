@@ -145,12 +145,19 @@ actually show up.
 `ch_driver_ci.yml` and `clickhouse_adapter_ecto_ci.yml` run on every push/PR
 touching their respective project (and, for `clickhouse_adapter_ecto_ci.yml`,
 its upstream `ch_driver` dependency too, since a change there can affect
-clickhouse_adapter_ecto's build): fetch deps, generate ch_driver's NIF
-checksum file (see the `FORCE_COMPILE` note under *Publish sequence* --
-this needs doing even for a plain test run, not just a release, since it's
-what lets `mix compile` trust the NIF at all on a checkout that's never
-built it before), compile with `--warnings-as-errors`, format check, and
-`mix test`. Both provision a live ClickHouse instance via a `services:`
+clickhouse_adapter_ecto's build): fetch deps, compile with
+`--warnings-as-errors`, format check, and `mix test`.
+
+Both set `FORCE_COMPILE: "1"` at the job level, so ch_driver's Rust NIF is
+built from source rather than downloaded. That matters for more than
+convenience: the precompiled download URL embeds the version from
+ch_driver's `mix.exs`, so any commit bumping it 404s in CI until that tag's
+release assets exist -- which happens *after* CI, not before. Building
+locally also means CI exercises the NIF source in the checkout instead of a
+previously-released binary. No checksum file is needed in this mode; only
+the release workflow generates one (see *Publish sequence* above).
+
+Both provision a live ClickHouse instance via a `services:`
 block (same pinned image/ports as `clickhouse_adapter_ecto/docker-compose.yml`);
 `clickhouse_adapter_ecto_ci.yml` additionally provisions Kafka for
 `test/integration/kafka_ingestion_test.exs`. `ch_driver_ci.yml` also
