@@ -306,10 +306,15 @@ one is skipped entirely when `num_rows` is 0.
   (each field of the `Tuple` gets its own back-to-back sub-stream). Reading
   it as "all offsets, then all keys, then all values" round-trips
   `{'a':1,'b':2}` correctly; an interleaved-pairs reading misaligns a
-  `String` length-prefix against unrelated numeric bytes. `Tuple(...)` on
-  its own isn't supported as a directly-selectable column type — only as
-  `Map`'s implicit representation — since generalizing it to arbitrary arity
-  isn't needed for anything this driver currently does.
+  `String` length-prefix against unrelated numeric bytes.
+- **`Tuple(T1, ..., Tn)`**: stored element-wise, exactly as the `Map` note
+  above describes for its two fields but generalized to any arity: all
+  `num_rows` values of element 1 contiguously, then all of element 2, and
+  so on. Each element is decoded as its own full column and the results
+  zipped back into per-row Elixir tuples. Elements may be named
+  (`Tuple(a Int32, b String)`); the name is stripped, since decoded values
+  are positional. Splitting the element list tracks paren depth, so
+  `Tuple(Int32, Map(String, Int32))` is two elements, not three.
 - **`LowCardinality(T)`**: dictionary-encoded. `key_version` (always 1),
   `index_type_and_flags` (low byte picks the per-row index width: 0=UInt8,
   1=UInt16, 2=UInt32, 3=UInt64; remaining bits are flags always set for the
@@ -321,6 +326,17 @@ one is skipped entirely when `num_rows` is 0.
   hangs the connection waiting for bytes that were never sent.
   Note `key_version` is a *hoisted prefix*, not part of this contiguous run
   — see the section above.
+
+  **`LowCardinality(Nullable(T))` has no null map.** Every other
+  `Nullable(T)` column leads with one, but inside a dictionary ClickHouse
+  instead reserves index 0 as the NULL sentinel, storing a default-valued
+  element in slot 0 (and, in practice, a second unused default in slot 1).
+  So the dictionary is read as plain `T` and a row is NULL when its index
+  is 0. This is strictly positional: an actual `''` or `0` value gets its
+  own non-zero slot, holding bytes identical to the sentinel's, so only the
+  index distinguishes them — comparing against the default value would
+  wrongly report real empty strings as NULL. Reading a null map that isn't
+  there consumed dictionary bytes and dropped the connection.
 - **`Variant(T1, ..., Tn)`**: a hoisted 8-byte discriminator-mode prefix
   (see above), then one discriminator byte per row, then one contiguous
   sub-column per alternative *in alternative order*, each holding only the

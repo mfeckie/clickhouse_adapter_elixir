@@ -4,6 +4,15 @@ All notable changes to `clickhouse_adapter_ecto` are documented here.
 
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.3.4 - 2026-08-26
+
+### Changed
+
+- Requires `ch_driver ~> 0.4`, which adds `Tuple(...)` decoding and fixes
+  `LowCardinality(Nullable(T))` columns dropping the connection. Both are
+  selectable through this adapter (verified via `Repo.query/2` and a schema
+  field through `Repo.all/1`), so the constraint moves with them.
+
 ## 0.3.3 - 2026-08-26
 
 ### Changed

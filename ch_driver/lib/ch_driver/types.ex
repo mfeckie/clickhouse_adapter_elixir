@@ -7,11 +7,11 @@ defmodule ChDriver.Types do
   `ChDriver.Protocol.Block.Wrappers` for how the parsed types drive actual
   column decoding.
 
-  Supports `Nullable(T)`, `Array(T)`, `Map(K, V)`, `LowCardinality(T)`,
-  `Variant(T1, ..., Tn)`, `Decimal(P, S)` (and its
-  `Decimal32/64/128/256(S)` aliases), `DateTime64(P[, 'TZ'])`, and
-  `FixedString(N)`. `Tuple(...)` isn't supported as a standalone column
-  type — only as `Map`'s internal representation.
+  Supports `Nullable(T)`, `Array(T)`, `Map(K, V)`, `LowCardinality(T)`
+  (including `LowCardinality(Nullable(T))`), `Tuple(T1, ..., Tn)` with
+  optionally named elements, `Variant(T1, ..., Tn)`, `Decimal(P, S)` (and
+  its `Decimal32/64/128/256(S)` aliases), `DateTime64(P[, 'TZ'])`, and
+  `FixedString(N)`.
   """
 
   @doc """
@@ -123,6 +123,59 @@ defmodule ChDriver.Types do
     else
       _ -> :error
     end
+  end
+
+  @doc """
+  Parses ClickHouse's `Tuple(T1, ..., Tn)` syntax, returning `{:ok,
+  [type_string]}` with the elements in wire order.
+
+  Elements may be named (`Tuple(a Int32, b String)`). The name is stripped
+  here: decoding produces positional Elixir tuples, so only the types
+  matter. A leading name is only recognized when what follows it starts
+  with an uppercase letter, as every ClickHouse type name does, so an
+  element containing a space for other reasons (`Enum8('a' = 1)`) is left
+  intact.
+
+  Splits on top-level commas only, so `Tuple(Int32, Map(String, Int32))`
+  yields two elements rather than three.
+  """
+  def parse_tuple(type) do
+    with {:ok, inner} <- strip_wrapper(type, "Tuple("),
+         parts when is_list(parts) <- split_top_level_comma(inner) do
+      {:ok, Enum.map(parts, &strip_element_name/1)}
+    else
+      _ -> :error
+    end
+  end
+
+  # `a Int32` -> `Int32`, but `Map(String, Int32)` (which a top-level comma
+  # split leaves as `Map(String,` + ` Int32)`) must be left alone. A leading
+  # name is only recognized when the first token is a bare identifier -- no
+  # parens or quotes -- and the remainder has balanced parens, so a type
+  # whose own arguments contain a space is never mistaken for a name.
+  defp strip_element_name(element) do
+    trimmed = String.trim(element)
+
+    with [name, rest] <- String.split(trimmed, ~r/\s+/, parts: 2),
+         true <- Regex.match?(~r/^[A-Za-z_][A-Za-z0-9_]*$/, name),
+         rest = String.trim(rest),
+         true <- balanced_parens?(rest) do
+      rest
+    else
+      _ -> trimmed
+    end
+  end
+
+  defp balanced_parens?(string) do
+    string
+    |> String.to_charlist()
+    |> Enum.reduce_while(0, fn
+      _char, depth when depth < 0 -> {:halt, -1}
+      ?(, depth -> {:cont, depth + 1}
+      ?), depth -> {:cont, depth - 1}
+      _char, depth -> {:cont, depth}
+    end)
+    |> Kernel.==(0)
   end
 
   @doc """

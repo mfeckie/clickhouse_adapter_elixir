@@ -231,6 +231,18 @@ defmodule ChDriver.Protocol.NativeBlock do
             end)
           end
         end
+      end,
+      fn t ->
+        # A tuple contributes no prefix of its own, just its elements' in
+        # element order.
+        with {:ok, element_types} <- Types.parse_tuple(t) do
+          Enum.reduce_while(element_types, {:ok, [], binary}, fn element_type, {:ok, acc, rest} ->
+            case decode_prefixes(element_type, rest) do
+              {:ok, prefixes, rest} -> {:cont, {:ok, acc ++ prefixes, rest}}
+              other -> {:halt, other}
+            end
+          end)
+        end
       end
     ]
 
@@ -301,6 +313,10 @@ defmodule ChDriver.Protocol.NativeBlock do
       fn t ->
         with {:ok, alternatives} <- Types.parse_variant(t),
              do: Wrappers.decode_variant(alternatives, num_rows, binary, prefixes)
+      end,
+      fn t ->
+        with {:ok, element_types} <- Types.parse_tuple(t),
+             do: Wrappers.decode_tuple(element_types, num_rows, binary, prefixes)
       end,
       fn t ->
         with {:ok, precision, scale} <- Types.parse_decimal(t),

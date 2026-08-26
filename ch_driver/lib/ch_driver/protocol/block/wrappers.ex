@@ -21,6 +21,7 @@ defmodule ChDriver.Protocol.Block.Wrappers do
   """
 
   alias ChDriver.Protocol.NativeBlock
+  alias ChDriver.Types
   alias ChDriver.Types.Registry
 
   @doc false
@@ -38,6 +39,30 @@ defmodule ChDriver.Protocol.Block.Wrappers do
         end)
 
       {:ok, combined, rest, prefixes}
+    end
+  end
+
+  @doc false
+  # A tuple is stored element-wise: all `num_rows` values of element 1, then
+  # all of element 2, and so on. Decode each element as its own full column,
+  # then zip them back into per-row Elixir tuples.
+  def decode_tuple(element_types, num_rows, binary, prefixes) do
+    result =
+      Enum.reduce_while(element_types, {:ok, [], binary, prefixes}, fn element_type,
+                                                                       {:ok, acc, rest, prefixes} ->
+        case NativeBlock.decode_column_data(element_type, num_rows, rest, prefixes) do
+          {:ok, values, rest, prefixes} -> {:cont, {:ok, [values | acc], rest, prefixes}}
+          other -> {:halt, other}
+        end
+      end)
+
+    with {:ok, reversed_columns, rest, prefixes} <- result do
+      rows =
+        reversed_columns
+        |> Enum.reverse()
+        |> Enum.zip_with(&List.to_tuple/1)
+
+      {:ok, rows, rest, prefixes}
     end
   end
 
@@ -166,19 +191,37 @@ defmodule ChDriver.Protocol.Block.Wrappers do
     # starts at the per-block index type/flags word.
     {_key_version, prefixes} = pop_prefix(prefixes)
 
+    # A LowCardinality(Nullable(T)) dictionary has no null map. ClickHouse
+    # reserves index 0 as the NULL sentinel and stores a default-valued
+    # element there instead, so the dictionary is read as plain T and index
+    # 0 maps to nil. Note this is positional: an actual "" or 0 value gets
+    # its own (non-zero) dictionary slot, so it must not be confused with
+    # the sentinel that happens to hold the same bytes.
+    {dictionary_type, nullable?} =
+      case Types.parse_nullable(inner_type) do
+        {:ok, unwrapped} -> {unwrapped, true}
+        :error -> {inner_type, false}
+      end
+
     with {:ok, [index_type_and_flags], rest} <-
            Registry.decode_fixed_width(binary, 1, 8, fn <<v::unsigned-little-64>> -> v end),
          {:ok, [dictionary_size], rest} <-
            Registry.decode_fixed_width(rest, 1, 8, fn <<v::unsigned-little-64>> -> v end),
          {:ok, dictionary, rest, prefixes} <-
-           NativeBlock.decode_column_data(inner_type, dictionary_size, rest, prefixes),
+           NativeBlock.decode_column_data(dictionary_type, dictionary_size, rest, prefixes),
          {:ok, [index_count], rest} <-
            Registry.decode_fixed_width(rest, 1, 8, fn <<v::unsigned-little-64>> -> v end),
          index_byte_size = index_byte_size(index_type_and_flags),
          {:ok, indexes, rest} <-
            Registry.decode_fixed_width(rest, index_count, index_byte_size, &decode_unsigned_le/1) do
       dictionary_tuple = List.to_tuple(dictionary)
-      values = Enum.map(indexes, &elem(dictionary_tuple, &1))
+
+      values =
+        Enum.map(indexes, fn
+          0 when nullable? -> nil
+          index -> elem(dictionary_tuple, index)
+        end)
+
       {:ok, values, rest, prefixes}
     end
   end

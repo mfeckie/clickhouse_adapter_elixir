@@ -4,6 +4,28 @@ All notable changes to `ch_driver` are documented here.
 
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.4.0 - 2026-08-26
+
+### Fixed
+
+- `LowCardinality(Nullable(T))` columns dropped the connection with a
+  `FunctionClauseError`. Unlike every other `Nullable(T)`, a dictionary has
+  no leading null map: ClickHouse reserves index 0 as the NULL sentinel and
+  stores a default-valued element in slot 0 instead. Reading a null map
+  that wasn't there consumed dictionary bytes. The sentinel is positional,
+  so a real `''` or `0` keeps its own non-zero slot and stays distinct from
+  NULL.
+
+### Added
+
+- `Tuple(T1, ..., Tn)` decoding, previously rejected with
+  `{:unsupported_type, "Tuple(...)"}`. Stored element-wise (all of element
+  1, then all of element 2, and so on) and decoded to positional Elixir
+  tuples. Elements may be named (`Tuple(a Int32, b String)`), and element
+  types may themselves be parameterized
+  (`Tuple(Int32, Map(String, Int32))`) or contribute hoisted serialization
+  prefixes (`Tuple(Array(LowCardinality(String)), String)`).
+
 ## 0.3.0 - 2026-08-26
 
 ### Fixed
@@ -44,20 +66,6 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   and ClickHouse cannot parse a Variant-valued Map from parameter text at
   all. To pass a Variant you must nest the casts through a member type, e.g.
   `CAST(CAST(?, 'Int32'), 'Variant(Bool, Int32, String)')`.
-
-### Known limitations
-
-These predate this release and are unchanged by it:
-
-- `LowCardinality(Nullable(T))` fails to decode. Inside a
-  `LowCardinality` dictionary, ClickHouse encodes nulls as an index-0
-  sentinel rather than the usual leading null map, so the null map decoder
-  mis-reads the dictionary. Affects it both standalone and nested, e.g.
-  `Array(LowCardinality(Nullable(String)))`.
-- `Tuple(...)` is not supported as a column type, raising
-  `{:unsupported_type, "Tuple(...)"}`.
-
-Both drop the connection rather than returning an error to the caller.
 
 ## 0.2.0 - 2026-08-01
 
