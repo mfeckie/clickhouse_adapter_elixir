@@ -4,6 +4,25 @@ All notable changes to `clickhouse_adapter_ecto` are documented here.
 
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.4.0 - 2026-08-27
+
+### Added
+
+- `with_cte/3` support in `all/2`: non-recursive common table expressions
+  (both the `^existing_query` and `fragment(...)` forms) render onto
+  ClickHouse's `WITH name AS (subquery) SELECT ...` clause. Recursive CTEs
+  (`recursive_ctes(query, true)`), the Postgres-only `:materialized` option,
+  and any `:operation` other than `:all` raise a clear `Ecto.QueryError`
+  instead of being silently dropped -- ClickHouse has no `WITH RECURSIVE` or
+  `MATERIALIZED`/`NOT MATERIALIZED` CTE modifier, and its `WITH` clause only
+  ever takes a `SELECT` subquery.
+- `lock: "FINAL"` support (via `from(x in X, lock: "FINAL")` or
+  `Ecto.Query.lock(query, "FINAL")`): appends ClickHouse's `FINAL` modifier
+  to the queried table, forcing merge-time collapsing of
+  `ReplacingMergeTree`/`AggregatingMergeTree` rows at query time for that
+  query only. Any other `lock:` value raises, since ClickHouse has no
+  row-locking concept.
+
 ## 0.3.4 - 2026-08-26
 
 ### Changed

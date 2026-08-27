@@ -108,7 +108,7 @@ MyApp.Repo.all(from e in MyApp.Event, where: e.name == "signup", order_by: e.occ
 
 | Feature | Support |
 |---|---|
-| `SELECT` | `INNER`/`LEFT`/`RIGHT`/`FULL`/`CROSS JOIN` (incl. `join: assoc(...)`), `GROUP BY`, `HAVING`. No ASOF/semi/anti/lateral joins, `DISTINCT`, or window/set operations. |
+| `SELECT` | `INNER`/`LEFT`/`RIGHT`/`FULL`/`CROSS JOIN` (incl. `join: assoc(...)`), `GROUP BY`, `HAVING`, non-recursive `with_cte/3`. No ASOF/semi/anti/lateral joins, `DISTINCT`, window/set operations, recursive CTEs, or `:materialized` CTEs. |
 | `INSERT` | No `:on_conflict`/`:returning` (ClickHouse has no upsert or `RETURNING`). |
 | `UPDATE`/`DELETE` | Not supported via `Repo.update!/1`/`delete!/1` -- ClickHouse mutates asynchronously via `ALTER TABLE ... UPDATE`/`DELETE`. `Repo.delete_all/2` is a narrow exception (single table, no joins/`LIMIT`/`OFFSET`), used by `Ecto.Migrator`'s rollback bookkeeping. |
 | Migrations | `CREATE`/`DROP TABLE` with plain `:add` columns. No `:alter`, indexes, or constraints -- use `execute/1` for anything else. |
