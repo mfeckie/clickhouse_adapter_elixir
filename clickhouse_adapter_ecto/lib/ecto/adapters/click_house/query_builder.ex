@@ -23,14 +23,22 @@ defmodule Ecto.Adapters.ClickHouse.QueryBuilder do
   `insert/8` doesn't support `:on_conflict` (no native upsert -- use
   `ReplacingMergeTree`/`CollapsingMergeTree` engines instead) or
   `:returning` (no `RETURNING` clause).
+
+  `all/2` renders non-recursive `with_cte/3` common table expressions (both
+  the `^existing_query` and `fragment(...)` forms) onto ClickHouse's own
+  `WITH name AS (subquery) SELECT ...` clause -- see `cte/2` below for what's
+  explicitly out of scope (recursive CTEs, `:materialized`, non-`:all`
+  operations) and why.
   """
 
   alias Ecto.Adapters.ClickHouse.{Connection, Expression, Naming}
+  alias Ecto.Query.{QueryExpr, WithExpr}
 
   @doc false
   def all(query, as_prefix \\ []) do
     sources = Naming.create_names(query, as_prefix)
 
+    cte = cte(query, sources)
     from = Expression.from(query, sources)
     select = Expression.select(query, sources)
     join = Expression.join(query, sources)
@@ -45,8 +53,70 @@ defmodule Ecto.Adapters.ClickHouse.QueryBuilder do
       Naming.error!(query, "the ClickHouse adapter does not support windows/set operations yet")
     end
 
-    [select, from, join, where, group_by, having, order_by, limit, offset]
+    [cte, select, from, join, where, group_by, having, order_by, limit, offset]
   end
+
+  ## `WITH` (common table expressions) -- `with_cte/3`'s non-recursive form
+  ## renders straightforwardly onto ClickHouse's own `WITH name AS (subquery)
+  ## SELECT ...` clause, which every currently-supported (`26.7`) ClickHouse
+  ## version accepts ahead of a `SELECT`.
+  ##
+  ## Explicitly out of scope (raise instead of silently mishandling):
+  ##
+  ##   * `recursive_ctes(query, true)`/`with_cte(..., recursive: true)` --
+  ##     ClickHouse has no `WITH RECURSIVE`; there is no SQL this adapter
+  ##     could emit for it.
+  ##   * `with_cte(..., materialized: true | false)` -- Postgres-specific
+  ##     `MATERIALIZED`/`NOT MATERIALIZED` CTE inlining hint, which
+  ##     ClickHouse's `WITH` clause has no equivalent modifier for.
+  ##   * `with_cte(..., operation: :update_all | :delete_all)` -- ClickHouse's
+  ##     `WITH` clause only ever takes a `SELECT` subquery (or a scalar
+  ##     expression), and this adapter doesn't implement `update_all`/
+  ##     `delete_all` as real SQL statements regardless (see below).
+  @doc false
+  def cte(%{with_ctes: nil}, _sources), do: []
+  def cte(%{with_ctes: %WithExpr{queries: []}}, _sources), do: []
+
+  def cte(%{with_ctes: %WithExpr{recursive: true}} = query, _sources) do
+    Naming.error!(
+      query,
+      "the ClickHouse adapter does not support recursive CTEs -- ClickHouse has no " <>
+        "`WITH RECURSIVE` equivalent"
+    )
+  end
+
+  def cte(%{with_ctes: %WithExpr{queries: queries}} = query, sources) do
+    ["WITH ", Enum.map_intersperse(queries, ", ", &cte_expr(&1, sources, query)), " "]
+  end
+
+  defp cte_expr({_name, %{materialized: materialized}, _cte}, _sources, query)
+       when is_boolean(materialized) do
+    Naming.error!(
+      query,
+      "the ClickHouse adapter does not support the `:materialized` CTE option -- ClickHouse's " <>
+        "`WITH` clause has no `MATERIALIZED`/`NOT MATERIALIZED` modifier"
+    )
+  end
+
+  defp cte_expr({name, opts, cte}, sources, query) do
+    case Map.get(opts, :operation, :all) do
+      operation when operation in [nil, :all] ->
+        [Naming.quote_name(name), " AS (", cte_query(cte, sources, query), ?)]
+
+      operation ->
+        Naming.error!(
+          query,
+          "the ClickHouse adapter only supports :all-operation CTEs (got #{inspect(operation)}) " <>
+            "-- ClickHouse's `WITH` clause only takes a SELECT subquery, and update_all/delete_all " <>
+            "aren't implemented as real SQL statements by this adapter regardless"
+        )
+    end
+  end
+
+  defp cte_query(%Ecto.Query{} = cte_query, _sources, _query), do: all(cte_query, [])
+
+  defp cte_query(%QueryExpr{expr: expr}, sources, query),
+    do: Expression.expr(expr, sources, query)
 
   @doc false
   def update_all(query, _prefix \\ nil) do
