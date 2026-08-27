@@ -22,6 +22,19 @@ defmodule Ecto.Adapters.ClickHouse.Expression do
   `join_use_nulls = 1` set. Code relying on `is_nil/1` against a
   left-joined column should account for this.
 
+  ## FINAL
+
+  `lock: "FINAL"` (via `from(x in X, lock: "FINAL")` or
+  `Ecto.Query.lock(query, "FINAL")`) appends ClickHouse's `FINAL` modifier
+  to the queried table, forcing merge-time collapsing of
+  `ReplacingMergeTree`/`AggregatingMergeTree` rows at query time for that
+  query only. This is the recommended per-query alternative to setting the
+  `final` connection-level server setting, which would apply `FINAL` to
+  every query on the connection (including tables that don't need it, at
+  real merge-time overhead on large tables). Any other `lock:` value
+  raises -- ClickHouse has no row-locking concept, so `FOR UPDATE`-style
+  locks have no equivalent here.
+
   ## What's not supported
 
   `DISTINCT`, selecting an entire source without an explicit field list,
@@ -64,9 +77,31 @@ defmodule Ecto.Adapters.ClickHouse.Expression do
   end
 
   @doc false
-  def from(_query, sources) do
+  def from(query, sources) do
     {from_sql, name, _schema} = elem(sources, 0)
-    [" FROM ", from_sql, " AS ", name]
+    [" FROM ", from_sql, " AS ", name, lock(query)]
+  end
+
+  ## `lock:` is repurposed for ClickHouse's `FINAL` modifier -- there's no
+  ## row-locking concept to map `FOR UPDATE`/`FOR SHARE` onto, but `lock:`
+  ## is the standard Ecto mechanism for a per-query SQL modifier, and
+  ## `FINAL` (forcing merge-time collapsing of `ReplacingMergeTree`/
+  ## `AggregatingMergeTree` rows at query time) is exactly that kind of
+  ## modifier. Only the literal `"FINAL"` is accepted: anything else raises
+  ## rather than being silently dropped, since ClickHouse has no `FOR
+  ## UPDATE` equivalent for `lock:`'s usual values.
+  defp lock(%{lock: nil}), do: []
+  defp lock(%{lock: "FINAL"}), do: " FINAL"
+
+  defp lock(query) do
+    Naming.error!(
+      query,
+      "the ClickHouse adapter only supports `lock: \"FINAL\"` -- ClickHouse has no " <>
+        "row-locking concept, so other lock clauses (e.g. `FOR UPDATE`) have no equivalent " <>
+        "here. Use `from(x in X, lock: \"FINAL\")` (or `Ecto.Query.lock(query, \"FINAL\")`) " <>
+        "to force merge-time deduplication on a `ReplacingMergeTree`/`AggregatingMergeTree` " <>
+        "table for that query only"
+    )
   end
 
   ## `JOIN` -- `INNER`/`LEFT`/`RIGHT`/`FULL`/`CROSS JOIN` on an explicit
