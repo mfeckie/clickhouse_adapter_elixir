@@ -1,7 +1,7 @@
 defmodule ClickhouseAdapterEcto.MixProject do
   use Mix.Project
 
-  @version "0.4.0"
+  @version "0.5.0"
   # clickhouse_adapter_ecto is a sibling project inside the
   # clickhouse_adapter_elixir repo -- see ch_driver/mix.exs for the same
   # convention.

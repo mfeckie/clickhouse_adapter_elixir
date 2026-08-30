@@ -4,6 +4,16 @@ All notable changes to `clickhouse_adapter_ecto` are documented here.
 
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.5.0 - 2026-08-30
+
+### Added
+
+- `field in subquery(inner_query)` support: renders ClickHouse's plain
+  non-correlated `x IN (SELECT ...)` directly. Only non-correlated
+  subqueries are supported -- like `LATERAL JOIN`, this adapter has no way
+  to expose an outer-query alias to an inner query, so a `subquery/1` body
+  referencing the outer query's bindings isn't supported.
+
 ## 0.4.0 - 2026-08-27
 
 ### Added
