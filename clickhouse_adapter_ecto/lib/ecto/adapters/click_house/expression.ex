@@ -45,7 +45,7 @@ defmodule Ecto.Adapters.ClickHouse.Expression do
   """
 
   alias Ecto.Query.{BooleanExpr, ByExpr, JoinExpr, QueryExpr}
-  alias Ecto.Adapters.ClickHouse.Naming
+  alias Ecto.Adapters.ClickHouse.{Naming, QueryBuilder}
 
   @doc false
   def select(%{select: %{fields: fields}, distinct: distinct} = query, sources) do
@@ -386,6 +386,26 @@ defmodule Ecto.Adapters.ClickHouse.Expression do
     [expr(left, sources, query), " IN (", args, ?)]
   end
 
+  ## `field in subquery(inner_query)` -- ClickHouse supports plain
+  ## non-correlated `x IN (SELECT ...)` directly, so this renders the
+  ## `%Ecto.SubQuery{}` Ecto's planner already substitutes in place of the
+  ## `subquery(...)` call as a fully parenthesized `SELECT`. No
+  ## param-renumbering is needed here: the planner (see
+  ## `Ecto.Query.Planner.cast_and_merge_params/5`) already splices the
+  ## subquery's own params into the outer query's flat param list in the
+  ## correct left-to-right order before this adapter ever sees the query,
+  ## and this adapter's `expr({:^, ...})` clause above always emits a bare
+  ## `"?"` regardless of index -- so rendering the subquery's SQL text in
+  ## normal AST-traversal order (as `expr/3` already does) is sufficient.
+  ##
+  ## Only non-correlated subqueries are supported: like the `LATERAL JOIN`
+  ## rejection above, this adapter has no way to expose an outer-query
+  ## alias to an inner query (no `@parent_as` plumbing), so `subquery/1`
+  ## bodies referencing the outer query's bindings aren't supported here.
+  def expr({:in, _, [left, %Ecto.SubQuery{} = subquery]}, sources, query) do
+    [expr(left, sources, query), " IN ", expr(subquery, sources, query)]
+  end
+
   def expr({:count, _, []}, _sources, _query), do: "count(*)"
 
   # `count(field, :distinct)` -- the arity-2 form of `Ecto.Query.API.count/2`
@@ -461,6 +481,10 @@ defmodule Ecto.Adapters.ClickHouse.Expression do
     end
   end
 
+  def expr(%Ecto.SubQuery{query: inner_query}, sources, _query) do
+    [?(, QueryBuilder.all(inner_query, subquery_as_prefix(sources)), ?)]
+  end
+
   def expr(%Decimal{} = decimal, _sources, _query), do: Decimal.to_string(decimal, :normal)
 
   def expr(%Ecto.Query.Tagged{value: value}, sources, query), do: expr(value, sources, query)
@@ -489,4 +513,12 @@ defmodule Ecto.Adapters.ClickHouse.Expression do
   end
 
   defp paren_if_needed(expr, sources, query), do: expr(expr, sources, query)
+
+  # `Naming.create_names/2` appends `as_prefix` itself as a trailing extra
+  # element after all N source tuples (see `create_names(_sources, pos, pos,
+  # as_prefix), do: [as_prefix]`), so `sources` here is an (N+1)-tuple whose
+  # last element is the *current* as_prefix. Extending it with `?s` keeps a
+  # subquery's own source aliases distinct from the outer query's when it
+  # calls `Naming.create_names/2` again with this as its `as_prefix`.
+  defp subquery_as_prefix(sources), do: [?s | :erlang.element(tuple_size(sources), sources)]
 end
