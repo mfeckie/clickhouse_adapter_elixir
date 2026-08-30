@@ -35,6 +35,14 @@ defmodule Ecto.Adapters.ClickHouse.Expression do
   raises -- ClickHouse has no row-locking concept, so `FOR UPDATE`-style
   locks have no equivalent here.
 
+  ## Subqueries
+
+  `field in subquery(inner_query)` renders as a plain, non-correlated
+  `x IN (SELECT ...)`. Only non-correlated subqueries are supported --
+  like `LATERAL JOIN`, this adapter has no way to expose an outer-query
+  alias to an inner query, so a `subquery/1` body referencing the outer
+  query's bindings isn't supported here.
+
   ## What's not supported
 
   `DISTINCT`, selecting an entire source without an explicit field list,
