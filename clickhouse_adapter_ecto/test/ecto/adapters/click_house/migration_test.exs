@@ -126,4 +126,114 @@ defmodule Ecto.Adapters.ClickHouse.MigrationTest do
       end
     end
   end
+
+  describe "create_materialized_view/2" do
+    test "emits CREATE MATERIALIZED VIEW IF NOT EXISTS ... TO ... AS ..." do
+      assert Migration.create_materialized_view(:events_mv,
+               to: :events,
+               as: "SELECT id, payload FROM events_queue"
+             ) ==
+               ~s(CREATE MATERIALIZED VIEW IF NOT EXISTS "events_mv" TO "events" AS SELECT id, payload FROM events_queue)
+    end
+
+    test "accepts string name and target" do
+      assert Migration.create_materialized_view("events_mv",
+               to: "events",
+               as: "SELECT id FROM events_queue"
+             ) ==
+               ~s(CREATE MATERIALIZED VIEW IF NOT EXISTS "events_mv" TO "events" AS SELECT id FROM events_queue)
+    end
+
+    test "quotes identifiers, not the raw SQL body" do
+      assert Migration.create_materialized_view(:my_mv,
+               to: :my_target,
+               as: "SELECT * FROM src WHERE x = 'literal'"
+             ) ==
+               ~s(CREATE MATERIALIZED VIEW IF NOT EXISTS "my_mv" TO "my_target" AS SELECT * FROM src WHERE x = 'literal')
+    end
+
+    test "raises ArgumentError when :to is missing" do
+      assert_raise ArgumentError, ~r/requires :to/, fn ->
+        Migration.create_materialized_view(:events_mv, as: "SELECT 1")
+      end
+    end
+
+    test "raises ArgumentError when :as is missing" do
+      assert_raise ArgumentError, ~r/requires :as/, fn ->
+        Migration.create_materialized_view(:events_mv, to: :events)
+      end
+    end
+
+    test "raises ArgumentError when :to is not an atom or string" do
+      assert_raise ArgumentError, ~r/:to must be an atom or string/, fn ->
+        Migration.create_materialized_view(:events_mv, to: 123, as: "SELECT 1")
+      end
+    end
+
+    test "raises ArgumentError when :as is not a non-empty string" do
+      assert_raise ArgumentError, ~r/:as must be a non-empty raw SQL string/, fn ->
+        Migration.create_materialized_view(:events_mv, to: :events, as: "")
+      end
+
+      assert_raise ArgumentError, ~r/:as must be a non-empty raw SQL string/, fn ->
+        Migration.create_materialized_view(:events_mv, to: :events, as: 123)
+      end
+    end
+
+    test "raises ArgumentError when the view name itself is invalid" do
+      assert_raise ArgumentError, ~r/name must be an atom or string/, fn ->
+        Migration.create_materialized_view(123, to: :events, as: "SELECT 1")
+      end
+    end
+
+    test "raises ArgumentError when given a non-keyword-list argument" do
+      assert_raise ArgumentError, ~r/expects a keyword list of options/, fn ->
+        Migration.create_materialized_view(:events_mv, "TO events AS SELECT 1")
+      end
+    end
+
+    test "raises ArgumentError (via Naming.quote_table/2) when the name contains a double quote" do
+      assert_raise ArgumentError, ~r/bad table name/, fn ->
+        Migration.create_materialized_view(~s(bad"name), to: :events, as: "SELECT 1")
+      end
+    end
+  end
+
+  describe "create_view/2" do
+    test "emits CREATE VIEW IF NOT EXISTS ... AS ..." do
+      assert Migration.create_view(:active_users_view,
+               as: "SELECT id FROM users WHERE active = 1"
+             ) ==
+               ~s(CREATE VIEW IF NOT EXISTS "active_users_view" AS SELECT id FROM users WHERE active = 1)
+    end
+
+    test "accepts a string name" do
+      assert Migration.create_view("active_users_view", as: "SELECT 1") ==
+               ~s(CREATE VIEW IF NOT EXISTS "active_users_view" AS SELECT 1)
+    end
+
+    test "raises ArgumentError when :as is missing" do
+      assert_raise ArgumentError, ~r/requires :as/, fn ->
+        Migration.create_view(:active_users_view, [])
+      end
+    end
+
+    test "raises ArgumentError when :as is not a non-empty string" do
+      assert_raise ArgumentError, ~r/:as must be a non-empty raw SQL string/, fn ->
+        Migration.create_view(:active_users_view, as: "")
+      end
+    end
+
+    test "raises ArgumentError when the view name itself is invalid" do
+      assert_raise ArgumentError, ~r/name must be an atom or string/, fn ->
+        Migration.create_view(%{}, as: "SELECT 1")
+      end
+    end
+
+    test "raises ArgumentError when given a non-keyword-list argument" do
+      assert_raise ArgumentError, ~r/expects a keyword list of options/, fn ->
+        Migration.create_view(:active_users_view, "AS SELECT 1")
+      end
+    end
+  end
 end
