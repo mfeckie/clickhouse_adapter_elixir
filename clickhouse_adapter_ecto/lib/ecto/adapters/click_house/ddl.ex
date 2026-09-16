@@ -163,13 +163,11 @@ defmodule Ecto.Adapters.ClickHouse.DDL do
       add(
         :status,
         Ecto.Adapters.ClickHouse.Migration.enum8(pending: 0, active: 1, expired: 2),
-        alias: \"\"\"
-        multiIf(
+        alias: "multiIf(
           (isNotNull(expired_at) AND expired_at < now64(3)) OR end_at < now64(3), 'expired',
           start_at > now64(3), 'pending',
           'active'
-        )
-        \"\"\"
+        )"
       )
 
   `:alias` can't be combined with `:default` (ALIAS and DEFAULT are
