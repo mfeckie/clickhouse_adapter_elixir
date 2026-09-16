@@ -27,6 +27,29 @@ defmodule Ecto.Adapters.ClickHouse.Migration do
 
       add(:m, :"Map(String, UInt32)")
 
+  `enum8/1`, `tuple/1`, `variant/1`, `aggregate_function/2`, and
+  `simple_aggregate_function/2` follow the same pattern -- validated
+  builders that return the quoted-atom form `add/3` accepts:
+
+      add(:status, Ecto.Adapters.ClickHouse.Migration.enum8(unknown: 0, active: 1, archived: 2))
+
+      add(:point, Ecto.Adapters.ClickHouse.Migration.tuple(x: :float, y: :float))
+
+      # nesting: a Tuple field whose type is itself Array(Tuple(...)).
+      add(
+        :answers,
+        Ecto.Adapters.ClickHouse.Migration.tuple(
+          id: :integer,
+          options: {:array, Ecto.Adapters.ClickHouse.Migration.tuple(label: :string, correct: :boolean)}
+        )
+      )
+
+      add(:mixed, Ecto.Adapters.ClickHouse.Migration.variant([:integer, :string, :boolean]))
+
+      add(:visitors, Ecto.Adapters.ClickHouse.Migration.aggregate_function("uniqExact", :uuid))
+
+      add(:total, Ecto.Adapters.ClickHouse.Migration.simple_aggregate_function("sum", :integer))
+
   ## Building a table's `options:` string
 
   `table/2`'s `options:` takes a single raw string for everything after the
@@ -69,9 +92,37 @@ defmodule Ecto.Adapters.ClickHouse.Migration do
   the migration runs in) as:
 
       ENGINE = Kafka SETTINGS kafka_broker_list = 'kafka:9092', kafka_topic_list = 'events', kafka_group_name = 'events_consumer', kafka_format = 'JSONEachRow'
+
+  ## Creating materialized views and views
+
+  `create_materialized_view/2` and `create_view/2` replace the raw
+  `CREATE MATERIALIZED VIEW ... TO ... AS ...`/`CREATE VIEW ... AS ...`
+  boilerplate every roster migration otherwise hand-writes for `execute/1`
+  -- only the `CREATE ... IF NOT EXISTS` shell, never the `SELECT` body,
+  which stays a raw SQL string passed as `:as` (see
+  `Ecto.Adapters.ClickHouse.DDL`'s moduledoc for the full Kafka-ingestion
+  example):
+
+      execute(
+        Ecto.Adapters.ClickHouse.Migration.create_materialized_view(:events_mv,
+          to: :events,
+          as: "SELECT id, payload FROM events_queue"
+        )
+      )
+
+      execute(
+        Ecto.Adapters.ClickHouse.Migration.create_view(:active_users_view,
+          as: "SELECT id FROM users WHERE active = 1"
+        )
+      )
+
+  Tear either down with `drop_if_exists(table(:name))` -- `DROP TABLE`
+  already works on both materialized and plain views in ClickHouse, so
+  there's no dedicated drop helper.
   """
 
   alias Ecto.Adapters.ClickHouse.DDL
+  alias Ecto.Adapters.ClickHouse.Naming
 
   @doc """
   Builds the quoted-atom migration type for `FixedString(size)`.
@@ -106,6 +157,268 @@ defmodule Ecto.Adapters.ClickHouse.Migration do
     :"LowCardinality(#{DDL.column_type!(inner_type)})"
   end
 
+  @doc """
+  Builds the quoted-atom migration type for `Enum8('key' = value, ...)`.
+
+  `values` is a keyword list (or list of `{key, value}` pairs, `key` an
+  atom or a string) mapping each enum key to its integer value.
+
+      add(:status, Ecto.Adapters.ClickHouse.Migration.enum8(unknown: 0, active: 1, archived: 2))
+      #=> add(:status, :"Enum8('unknown' = 0, 'active' = 1, 'archived' = 2)")
+
+      iex> Ecto.Adapters.ClickHouse.Migration.enum8(unknown: 0, active: 1)
+      :"Enum8('unknown' = 0, 'active' = 1)"
+
+  Raises `ArgumentError` if `values` isn't a non-empty list of
+  `{key, value}` pairs, if a key isn't an atom or string, if a value isn't
+  an integer, or if there are duplicate keys or duplicate values.
+  """
+  @spec enum8([{atom() | String.t(), integer()}]) :: atom()
+  def enum8(values) when is_list(values) and values != [] do
+    Enum.each(values, &validate_enum_pair!/1)
+    validate_enum_no_duplicate_keys!(values)
+    validate_enum_no_duplicate_values!(values)
+
+    rendered =
+      Enum.map_intersperse(values, ", ", fn {key, value} ->
+        "'#{quote_enum_key(key)}' = #{value}"
+      end)
+
+    :"Enum8(#{IO.iodata_to_binary(rendered)})"
+  end
+
+  def enum8([]) do
+    raise ArgumentError, "enum8/1 expects a non-empty list of {key, value} pairs, got: []"
+  end
+
+  def enum8(other) do
+    raise ArgumentError,
+          "enum8/1 expects a keyword list (or list of {key, value} pairs), got: #{inspect(other)}"
+  end
+
+  # Enum keys are embedded inside a single-quoted ClickHouse string literal
+  # in the rendered type -- a literal `'` in the key would otherwise close
+  # the quote early and let the rest of the key corrupt the DDL, so it's
+  # escaped by doubling, same as `quote_setting_string/1` does for
+  # `table_options/1`'s `:settings` values.
+  defp quote_enum_key(key) do
+    key |> to_string() |> String.replace("'", "''")
+  end
+
+  defp validate_enum_pair!({key, value}) when is_atom(key) or is_binary(key) do
+    unless is_integer(value) do
+      raise ArgumentError,
+            "enum8/1 value for key #{inspect(key)} must be an integer, got: #{inspect(value)}"
+    end
+  end
+
+  defp validate_enum_pair!(other) do
+    raise ArgumentError,
+          "enum8/1 expects a list of {key, value} pairs with an atom/string key and an " <>
+            "integer value, got: #{inspect(other)}"
+  end
+
+  defp validate_enum_no_duplicate_keys!(values) do
+    keys = Enum.map(values, fn {key, _value} -> to_string(key) end)
+
+    case keys -- Enum.uniq(keys) do
+      [] ->
+        :ok
+
+      duplicates ->
+        raise ArgumentError,
+              "enum8/1 received duplicate key(s): #{inspect(Enum.uniq(duplicates))}"
+    end
+  end
+
+  defp validate_enum_no_duplicate_values!(values) do
+    vals = Enum.map(values, fn {_key, value} -> value end)
+
+    case vals -- Enum.uniq(vals) do
+      [] ->
+        :ok
+
+      duplicates ->
+        raise ArgumentError,
+              "enum8/1 received duplicate value(s): #{inspect(Enum.uniq(duplicates))}"
+    end
+  end
+
+  @doc """
+  Builds the quoted-atom migration type for a named `Tuple(field type, ...)`.
+
+  `fields` is a keyword list (or list of `{name, type}` pairs) mapping
+  each tuple field name to an Ecto type
+  `Ecto.Adapters.ClickHouse.DDL`'s `column_type!/1` knows how to map
+  (a plain type like `:string`, `{:array, :string}`, or the quoted-atom
+  output of another builder in this module, including nested calls to
+  `tuple/1` itself).
+
+      add(:point, Ecto.Adapters.ClickHouse.Migration.tuple(x: :float, y: :float))
+      #=> add(:point, :"Tuple(x Float64, y Float64)")
+
+      iex> Ecto.Adapters.ClickHouse.Migration.tuple(x: :float, y: :float)
+      :"Tuple(x Float64, y Float64)"
+
+  Nesting -- a `Tuple` field whose type is itself `Array(Tuple(...))` --
+  works by passing another `tuple/1` call (optionally wrapped in
+  `{:array, ...}`) as a field's type:
+
+      iex> Ecto.Adapters.ClickHouse.Migration.tuple(
+      ...>   id: :integer,
+      ...>   options: {:array, Ecto.Adapters.ClickHouse.Migration.tuple(label: :string, correct: :boolean)}
+      ...> )
+      :"Tuple(id Int32, options Array(Tuple(label String, correct UInt8)))"
+
+  The result is also usable as the inner type of Ecto's own
+  `{:array, inner_type}` shorthand, for an `Array(Tuple(...))` column:
+
+      add(:rows, {:array, Ecto.Adapters.ClickHouse.Migration.tuple(a: :integer, b: :string)})
+      #=> add(:rows, :"Array(Tuple(a Int32, b String))")
+
+  Raises `ArgumentError` if `fields` isn't a non-empty list of
+  `{name, type}` pairs, if a field name isn't a valid identifier
+  (atom/string, starting with a letter or underscore), or (via
+  `column_type!/1`) if a field's type isn't one this adapter's migration
+  DDL knows how to map.
+  """
+  @spec tuple([{atom() | String.t(), term()}]) :: atom()
+  def tuple(fields) when is_list(fields) and fields != [] do
+    rendered =
+      Enum.map_intersperse(fields, ", ", fn
+        {name, type} ->
+          "#{validate_field_name!(name)} #{DDL.column_type!(type)}"
+
+        other ->
+          raise ArgumentError,
+                "tuple/1 expects a list of {field_name, type} pairs, got element: " <>
+                  "#{inspect(other)}"
+      end)
+
+    :"Tuple(#{IO.iodata_to_binary(rendered)})"
+  end
+
+  def tuple([]) do
+    raise ArgumentError, "tuple/1 expects a non-empty list of {field_name, type} pairs, got: []"
+  end
+
+  def tuple(other) do
+    raise ArgumentError,
+          "tuple/1 expects a keyword list (or list of {field_name, type} pairs), got: " <>
+            "#{inspect(other)}"
+  end
+
+  @field_name_pattern ~r/^[A-Za-z_][A-Za-z0-9_]*$/
+
+  defp validate_field_name!(name) when is_atom(name), do: validate_field_name!(to_string(name))
+
+  defp validate_field_name!(name) when is_binary(name) do
+    if Regex.match?(@field_name_pattern, name) do
+      name
+    else
+      raise ArgumentError,
+            "tuple/1 field name #{inspect(name)} is not a valid identifier -- must start with " <>
+              "a letter or underscore and contain only letters, digits, and underscores"
+    end
+  end
+
+  defp validate_field_name!(other) do
+    raise ArgumentError,
+          "tuple/1 field name must be an atom or string, got: #{inspect(other)}"
+  end
+
+  @doc """
+  Builds the quoted-atom migration type for `Variant(Type1, Type2, ...)`.
+
+  `types` is a list of at least two Ecto types
+  `Ecto.Adapters.ClickHouse.DDL`'s `column_type!/1` knows how to map.
+
+      add(:mixed, Ecto.Adapters.ClickHouse.Migration.variant([:integer, :string, :boolean]))
+      #=> add(:mixed, :"Variant(Int32, String, UInt8)")
+
+      iex> Ecto.Adapters.ClickHouse.Migration.variant([:integer, :string])
+      :"Variant(Int32, String)"
+
+  Raises `ArgumentError` if `types` isn't a list of at least two elements,
+  or (via `column_type!/1`) if one of the types isn't one this adapter's
+  migration DDL knows how to map.
+  """
+  @spec variant([term()]) :: atom()
+  def variant(types) when is_list(types) and length(types) >= 2 do
+    rendered = Enum.map_intersperse(types, ", ", &DDL.column_type!/1)
+    :"Variant(#{IO.iodata_to_binary(rendered)})"
+  end
+
+  def variant(types) when is_list(types) do
+    raise ArgumentError,
+          "variant/1 expects a list of at least 2 types, got: #{inspect(types)}"
+  end
+
+  def variant(other) do
+    raise ArgumentError, "variant/1 expects a list of types, got: #{inspect(other)}"
+  end
+
+  @doc """
+  Builds the quoted-atom migration type for `AggregateFunction(fn_name, Type)`.
+
+  `fn_name` is the aggregate function's name (e.g. `"uniqExact"`, `"max"`,
+  `"any"` -- any valid ClickHouse identifier, not a fixed list), and
+  `type` is the single argument type, an Ecto type
+  `Ecto.Adapters.ClickHouse.DDL`'s `column_type!/1` knows how to map.
+
+      add(:visitors, Ecto.Adapters.ClickHouse.Migration.aggregate_function("uniqExact", :uuid))
+      #=> add(:visitors, :"AggregateFunction(uniqExact, UUID)")
+
+      iex> Ecto.Adapters.ClickHouse.Migration.aggregate_function("max", :integer)
+      :"AggregateFunction(max, Int32)"
+
+  Raises `ArgumentError` if `fn_name` isn't a valid identifier-shaped
+  atom/string, or (via `column_type!/1`) if `type` isn't one this
+  adapter's migration DDL knows how to map.
+  """
+  @spec aggregate_function(atom() | String.t(), term()) :: atom()
+  def aggregate_function(fn_name, type) do
+    :"AggregateFunction(#{validate_fn_name!(fn_name)}, #{DDL.column_type!(type)})"
+  end
+
+  @doc """
+  Builds the quoted-atom migration type for
+  `SimpleAggregateFunction(fn_name, Type)`.
+
+  Same shape and validation as `aggregate_function/2`.
+
+      add(:total, Ecto.Adapters.ClickHouse.Migration.simple_aggregate_function("sum", :integer))
+      #=> add(:total, :"SimpleAggregateFunction(sum, Int32)")
+
+      iex> Ecto.Adapters.ClickHouse.Migration.simple_aggregate_function("sum", :integer)
+      :"SimpleAggregateFunction(sum, Int32)"
+
+  Raises `ArgumentError` if `fn_name` isn't a valid identifier-shaped
+  atom/string, or (via `column_type!/1`) if `type` isn't one this
+  adapter's migration DDL knows how to map.
+  """
+  @spec simple_aggregate_function(atom() | String.t(), term()) :: atom()
+  def simple_aggregate_function(fn_name, type) do
+    :"SimpleAggregateFunction(#{validate_fn_name!(fn_name)}, #{DDL.column_type!(type)})"
+  end
+
+  @fn_name_pattern ~r/^[A-Za-z_][A-Za-z0-9_]*$/
+
+  defp validate_fn_name!(fn_name) when is_atom(fn_name), do: validate_fn_name!(to_string(fn_name))
+
+  defp validate_fn_name!(fn_name) when is_binary(fn_name) do
+    if Regex.match?(@fn_name_pattern, fn_name) do
+      fn_name
+    else
+      raise ArgumentError,
+            "expected a valid function name (identifier), got: #{inspect(fn_name)}"
+    end
+  end
+
+  defp validate_fn_name!(other) do
+    raise ArgumentError, "expected a function name as an atom or string, got: #{inspect(other)}"
+  end
+
   @typedoc """
   A single `:settings` value for `table_options/1`.
 
@@ -118,11 +431,11 @@ defmodule Ecto.Adapters.ClickHouse.Migration do
   """
   @type setting_value :: String.t() | number() | boolean() | {:system, String.t()}
 
-  @valid_table_options_keys [:engine, :partition_by, :order_by, :settings]
+  @valid_table_options_keys [:engine, :partition_by, :order_by, :ttl, :settings]
 
   @doc """
   Builds the options string `table/2`'s `options:` expects (everything
-  after the column list: `ENGINE`, `PARTITION BY`, `ORDER BY`,
+  after the column list: `ENGINE`, `PARTITION BY`, `ORDER BY`, `TTL`,
   `SETTINGS`), from a keyword list instead of a hand-quoted raw string.
 
   ## Options
@@ -131,6 +444,8 @@ defmodule Ecto.Adapters.ClickHouse.Migration do
       or a full engine expression like `"Kafka"`.
     * `:partition_by` -- rendered as `PARTITION BY <value>`.
     * `:order_by` -- rendered as `ORDER BY <value>`.
+    * `:ttl` -- rendered as `TTL <value>`, e.g.
+      `"timestamp + toIntervalYear(2)"`.
     * `:settings` -- a keyword list of `key: value` pairs, rendered as
       `SETTINGS key1 = 'value1', key2 = value2, ...`. String values are
       single-quoted; numbers and booleans are not. A value can also be
@@ -139,8 +454,8 @@ defmodule Ecto.Adapters.ClickHouse.Migration do
       example.
 
   Clause order in the rendered string (`ENGINE` · `PARTITION BY` ·
-  `ORDER BY` · `SETTINGS`) matches ClickHouse's own `CREATE TABLE` clause
-  order; only clauses that were given are included.
+  `ORDER BY` · `TTL` · `SETTINGS`) matches ClickHouse's own `CREATE
+  TABLE` clause order; only clauses that were given are included.
 
       iex> Ecto.Adapters.ClickHouse.Migration.table_options(engine: "MergeTree", order_by: "id")
       "ENGINE = MergeTree ORDER BY id"
@@ -152,6 +467,13 @@ defmodule Ecto.Adapters.ClickHouse.Migration do
       ...>   settings: [index_granularity: 8192]
       ...> )
       "ENGINE = MergeTree PARTITION BY toYYYYMM(inserted_at) ORDER BY id SETTINGS index_granularity = 8192"
+
+      iex> Ecto.Adapters.ClickHouse.Migration.table_options(
+      ...>   engine: "ReplacingMergeTree(timestamp)",
+      ...>   order_by: "(id)",
+      ...>   ttl: "timestamp + toIntervalYear(2)"
+      ...> )
+      "ENGINE = ReplacingMergeTree(timestamp) ORDER BY (id) TTL timestamp + toIntervalYear(2)"
 
   Raises `ArgumentError` if `:engine` is missing, if an unrecognized
   top-level option key is given, if `:settings` isn't a keyword list, if
@@ -167,6 +489,7 @@ defmodule Ecto.Adapters.ClickHouse.Migration do
       "ENGINE = #{engine}",
       optional_clause("PARTITION BY", Keyword.get(opts, :partition_by)),
       optional_clause("ORDER BY", Keyword.get(opts, :order_by)),
+      optional_clause("TTL", Keyword.get(opts, :ttl)),
       settings_clause(Keyword.get(opts, :settings))
     ]
     |> Enum.reject(&is_nil/1)
@@ -271,5 +594,153 @@ defmodule Ecto.Adapters.ClickHouse.Migration do
 
   defp quote_setting_string(value) do
     "'" <> String.replace(value, "'", "''") <> "'"
+  end
+
+  @doc """
+  Builds `CREATE MATERIALIZED VIEW IF NOT EXISTS <name> TO <target> AS
+  <sql>` -- the boilerplate roster's Kafka-engine (and other)
+  ingestion-pipeline migrations otherwise hand-write as a raw `execute/1`
+  string every time.
+
+  This is deliberately thin: it only assembles the `CREATE MATERIALIZED
+  VIEW ... TO ... AS ...` shell with correctly quoted identifiers. The
+  `SELECT` body itself (`:as`) is, and stays, a raw SQL string -- `ARRAY
+  JOIN`, `multiIf`, `transform`, `CAST`, aggregate combinators, `GROUP BY`,
+  etc. are genuinely open-ended query logic this module makes no attempt
+  to model.
+
+  ## Options
+
+    * `:to` (required) -- the target table the view writes into (an atom
+      or string), quoted the same way `create table(...)` quotes a table
+      name.
+    * `:as` (required) -- the raw `SELECT ...` SQL string.
+
+  Only the explicit `... TO target_table AS SELECT ...` form is built --
+  the implicit-target-table form (`ENGINE = ... AS SELECT ...`, which
+  creates a hidden backing table with a mangled name `down/0` can't
+  address) isn't supported here; see this module's moduledoc.
+
+      execute(
+        Ecto.Adapters.ClickHouse.Migration.create_materialized_view(:events_mv,
+          to: :events,
+          as: "SELECT id, payload FROM events_queue"
+        )
+      )
+
+      # => CREATE MATERIALIZED VIEW IF NOT EXISTS "events_mv" TO "events" AS SELECT id, payload FROM events_queue
+
+  Tear down with `drop_if_exists(table(:events_mv))` -- `DROP TABLE`
+  already works on a materialized view in ClickHouse, so no dedicated
+  drop helper is needed (see `Ecto.Adapters.ClickHouse.DDL`'s moduledoc).
+
+  Raises `ArgumentError` if `name`, `:to`, or `:as` is missing or not a
+  valid atom/string (`:to`/name) or non-empty string (`:as`).
+  """
+  @spec create_materialized_view(atom() | String.t(), keyword()) :: String.t()
+  def create_materialized_view(name, opts) when is_list(opts) do
+    validate_keyword_opts!(opts, "create_materialized_view/2")
+    quoted_name = quote_identifier!(name, "create_materialized_view/2 name")
+    target = fetch_required!(opts, :to, "create_materialized_view/2")
+    quoted_target = quote_identifier!(target, "create_materialized_view/2 :to")
+    as_sql = fetch_as!(opts, "create_materialized_view/2")
+
+    IO.iodata_to_binary([
+      "CREATE MATERIALIZED VIEW IF NOT EXISTS ",
+      quoted_name,
+      " TO ",
+      quoted_target,
+      " AS ",
+      as_sql
+    ])
+  end
+
+  def create_materialized_view(_name, other) do
+    raise ArgumentError,
+          "create_materialized_view/2 expects a keyword list of options, got: #{inspect(other)}"
+  end
+
+  @doc """
+  Builds `CREATE VIEW IF NOT EXISTS <name> AS <sql>` -- a plain
+  (non-materialized) ClickHouse view.
+
+  Like `create_materialized_view/2`, this only assembles the `CREATE
+  VIEW ... AS ...` shell; the `SELECT` body (`:as`) stays a raw SQL
+  string.
+
+  ## Options
+
+    * `:as` (required) -- the raw `SELECT ...` SQL string.
+
+      execute(
+        Ecto.Adapters.ClickHouse.Migration.create_view(:active_users_view,
+          as: "SELECT id FROM users WHERE active = 1"
+        )
+      )
+
+      # => CREATE VIEW IF NOT EXISTS "active_users_view" AS SELECT id FROM users WHERE active = 1
+
+  Tear down with `drop_if_exists(table(:active_users_view))` -- `DROP
+  TABLE` also works on a plain view in ClickHouse.
+
+  Raises `ArgumentError` if `name` or `:as` is missing or invalid.
+  """
+  @spec create_view(atom() | String.t(), keyword()) :: String.t()
+  def create_view(name, opts) when is_list(opts) do
+    validate_keyword_opts!(opts, "create_view/2")
+    quoted_name = quote_identifier!(name, "create_view/2 name")
+    as_sql = fetch_as!(opts, "create_view/2")
+
+    IO.iodata_to_binary(["CREATE VIEW IF NOT EXISTS ", quoted_name, " AS ", as_sql])
+  end
+
+  def create_view(_name, other) do
+    raise ArgumentError,
+          "create_view/2 expects a keyword list of options, got: #{inspect(other)}"
+  end
+
+  defp validate_keyword_opts!(opts, context) do
+    unless Keyword.keyword?(opts) do
+      raise ArgumentError, "#{context} expects a keyword list of options, got: #{inspect(opts)}"
+    end
+  end
+
+  defp quote_identifier!(name, _context) when is_atom(name) or is_binary(name) do
+    Naming.quote_table(nil, name)
+  end
+
+  defp quote_identifier!(other, context) do
+    raise ArgumentError,
+          "#{context} must be an atom or string, got: #{inspect(other)}"
+  end
+
+  defp fetch_required!(opts, key, context) do
+    case Keyword.fetch(opts, key) do
+      {:ok, value} when is_atom(value) or is_binary(value) ->
+        value
+
+      {:ok, other} ->
+        raise ArgumentError,
+              "#{context} #{inspect(key)} must be an atom or string, got: #{inspect(other)}"
+
+      :error ->
+        raise ArgumentError, "#{context} requires #{inspect(key)}"
+    end
+  end
+
+  defp fetch_as!(opts, context) do
+    case Keyword.fetch(opts, :as) do
+      {:ok, sql} when is_binary(sql) and sql != "" ->
+        sql
+
+      {:ok, other} ->
+        raise ArgumentError,
+              "#{context} :as must be a non-empty raw SQL string, got: #{inspect(other)}"
+
+      :error ->
+        raise ArgumentError,
+              "#{context} requires :as (a raw SELECT SQL string, e.g. " <>
+                "#{context}(:name, as: \"SELECT ...\"))"
+    end
   end
 end

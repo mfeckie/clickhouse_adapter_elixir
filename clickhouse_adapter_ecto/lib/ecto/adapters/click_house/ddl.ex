@@ -74,27 +74,6 @@ defmodule Ecto.Adapters.ClickHouse.DDL do
 
           execute(\"\"\"
           CREATE TABLE events_queue (id UInt64, payload String)
-          ENGINE = Kafka
-          SETTINGS kafka_broker_list = 'kafka:9092',
-                   kafka_topic_list = 'events',
-                   kafka_group_name = 'events_consumer',
-                   kafka_format = 'JSONEachRow'
-          \"\"\")
-
-          execute(\"\"\"
-          CREATE MATERIALIZED VIEW events_mv TO events AS
-          SELECT id, payload FROM events_queue
-          \"\"\")
-
-      Hand-quoting that `SETTINGS` clause is tedious and error-prone once
-      it has several key/value pairs -- build it with
-      `Ecto.Adapters.ClickHouse.Migration.table_options/1` instead, which
-      also supports pulling values like `kafka_broker_list` from the
-      environment at migration-run time via `{:system, "ENV_VAR"}` rather
-      than committing them as a literal string:
-
-          execute(\"\"\"
-          CREATE TABLE events_queue (id UInt64, payload String)
           \#{Ecto.Adapters.ClickHouse.Migration.table_options(
             engine: "Kafka",
             settings: [
@@ -106,6 +85,30 @@ defmodule Ecto.Adapters.ClickHouse.DDL do
           )}
           \"\"\")
 
+          execute(
+            Ecto.Adapters.ClickHouse.Migration.create_materialized_view(:events_mv,
+              to: :events,
+              as: "SELECT id, payload FROM events_queue"
+            )
+          )
+
+      Hand-quoting that `SETTINGS` clause is tedious and error-prone once
+      it has several key/value pairs -- `table_options/1` builds it from a
+      keyword list instead, and also supports pulling values like
+      `kafka_broker_list` from the environment at migration-run time via
+      `{:system, "ENV_VAR"}` rather than committing them as a literal
+      string (as shown above). `create_materialized_view/2` (and its
+      non-materialized counterpart `create_view/2`) similarly replace the
+      hand-written `CREATE MATERIALIZED VIEW ... TO ... AS ...`/
+      `CREATE VIEW ... AS ...` boilerplate with a validated, correctly
+      quoted `IF NOT EXISTS` shell -- but only the shell: the `SELECT`
+      body passed as `:as` is, and stays, a raw SQL string. `ARRAY JOIN`,
+      `multiIf`, `transform`, `CAST`, aggregate combinators, `GROUP BY`,
+      and the rest of the query logic that goes into that `SELECT` are
+      genuinely open-ended and out of scope for any DSL here -- these
+      helpers only ever remove the `CREATE ... IF NOT EXISTS <name>
+      [TO <target>] AS` wrapper around it.
+
       Only the explicit `... TO target_table AS SELECT ...` view form is
       supported; the implicit-target-table form
       (`ENGINE = ... AS SELECT ...`) creates a hidden backing table with a
@@ -114,6 +117,10 @@ defmodule Ecto.Adapters.ClickHouse.DDL do
       Tear down in reverse: view, then Kafka table, then target table --
       dropping the target table while the view is still live leaves
       ingestion silently stalled with no error surfaced anywhere.
+      `drop_if_exists(table(name))` (this module's own `DROP TABLE IF
+      EXISTS`) tears down a materialized view or a plain view exactly the
+      same as any other table -- ClickHouse allows `DROP TABLE` on views,
+      so no separate `drop_materialized_view`/`drop_view` helper exists.
 
   ## ClickHouse-specific column types
 
@@ -143,6 +150,32 @@ defmodule Ecto.Adapters.ClickHouse.DDL do
   `schema_migrations` and quick dev tables, but MergeTree's sort key is a
   real modeling decision for anything performance-sensitive -- pick it
   explicitly once that matters.
+
+  ## ALIAS columns
+
+  ClickHouse computed/virtual columns (`ALIAS expr`) have an `:alias`
+  option on `add/3`: pass a raw SQL expression string and the column is
+  emitted as `<name> <type> ALIAS <expr>` with no `Nullable(...)`
+  wrapping, regardless of `:null` -- `ALIAS` columns are computed on read
+  from other columns in the row and are never stored/nullable-wrapped the
+  way a plain column is.
+
+      add(
+        :status,
+        Ecto.Adapters.ClickHouse.Migration.enum8(pending: 0, active: 1, expired: 2),
+        alias: "multiIf(
+          (isNotNull(expired_at) AND expired_at < now64(3)) OR end_at < now64(3), 'expired',
+          start_at > now64(3), 'pending',
+          'active'
+        )"
+      )
+
+  `:alias` can't be combined with `:default` (ALIAS and DEFAULT are
+  mutually exclusive ClickHouse column modifiers) or with an explicit
+  `null: true` (an ALIAS column is never Nullable, so asking for one is a
+  contradiction) -- both raise `ArgumentError` rather than emitting
+  DDL ClickHouse would otherwise reject with a much less actionable
+  error.
 
   ## `ORDER BY`/`PRIMARY KEY` is not a Postgres primary key
 
@@ -245,25 +278,67 @@ defmodule Ecto.Adapters.ClickHouse.DDL do
   defp column_definition!({:add, name, type, opts}) do
     base_type = column_type!(type)
 
-    # `null: true` is Ecto's own default (matching every other Ecto
-    # adapter): a column is nullable unless `null: false` is given
-    # explicitly. `ChDriver.Protocol.NativeBlock` decodes `Nullable(T)`,
-    # so this maps straight through to a
-    # `Nullable(...)` column type. A `:primary_key` column is never
-    # wrapped in `Nullable`, regardless of the `:null` option, since
-    # ClickHouse's `ORDER BY`/primary key columns can't be `Nullable`.
-    nullable? =
-      Keyword.get(opts, :null, true) == true and not Keyword.get(opts, :primary_key, false)
+    case Keyword.fetch(opts, :alias) do
+      {:ok, expr} ->
+        validate_alias_opts!(name, opts, expr)
+        [quote_name(name), " ", base_type, " ALIAS ", expr]
 
-    type_sql = if nullable?, do: ["Nullable(", base_type, ?)], else: base_type
+      :error ->
+        # `null: true` is Ecto's own default (matching every other Ecto
+        # adapter): a column is nullable unless `null: false` is given
+        # explicitly. `ChDriver.Protocol.NativeBlock` decodes `Nullable(T)`,
+        # so this maps straight through to a
+        # `Nullable(...)` column type. A `:primary_key` column is never
+        # wrapped in `Nullable`, regardless of the `:null` option, since
+        # ClickHouse's `ORDER BY`/primary key columns can't be `Nullable`.
+        nullable? =
+          Keyword.get(opts, :null, true) == true and not Keyword.get(opts, :primary_key, false)
 
-    [quote_name(name), " ", type_sql]
+        type_sql = if nullable?, do: ["Nullable(", base_type, ?)], else: base_type
+
+        [quote_name(name), " ", type_sql]
+    end
   end
 
   defp column_definition!(other) do
     raise ArgumentError,
           "the ClickHouse adapter's migration DDL only supports :add column commands in " <>
             "CREATE TABLE -- got: #{inspect(other)} (no :alter/:modify/:remove support)"
+  end
+
+  # `ALIAS` columns are computed on read and never stored, so ClickHouse
+  # rejects (or silently produces nonsensical DDL for) an `ALIAS` column
+  # that also carries a stored-column modifier -- reject those
+  # combinations up front with a clear message instead of emitting DDL
+  # ClickHouse will reject at CREATE TABLE time with a much less
+  # actionable error.
+  defp validate_alias_opts!(name, opts, expr) do
+    unless is_binary(expr) do
+      raise ArgumentError,
+            "the :alias option for column #{inspect(name)} must be a raw SQL expression " <>
+              "string (e.g. alias: \"multiIf(...)\"), got: #{inspect(expr)}"
+    end
+
+    cond do
+      Keyword.has_key?(opts, :default) ->
+        raise ArgumentError, "
+        column #{inspect(name)} can't combine :alias with :default -- ALIAS and DEFAULT are
+        mutually exclusive ClickHouse column modifiers (ALIAS is computed on read and never
+        stored, DEFAULT is stored and only computed when no value is supplied on INSERT).
+        Pick one.
+        "
+
+      Keyword.get(opts, :null) == true ->
+        raise ArgumentError, "
+        column #{inspect(name)} can't combine :alias with null: true -- ClickHouse ALIAS
+        columns are computed on read and are never Nullable-wrapped, regardless of :null.
+        Drop the :null option for this column (or pass null: false if you want to document
+        that intent -- it has no effect on the emitted DDL either way).
+        "
+
+      true ->
+        :ok
+    end
   end
 
   # Exposed (rather than kept `defp`) so
