@@ -111,7 +111,7 @@ MyApp.Repo.all(from e in MyApp.Event, where: e.name == "signup", order_by: e.occ
 | `SELECT` | `INNER`/`LEFT`/`RIGHT`/`FULL`/`CROSS JOIN` (incl. `join: assoc(...)`), `GROUP BY`, `HAVING`, non-recursive `with_cte/3`, non-correlated `field in subquery(...)`. No ASOF/semi/anti/lateral joins, `DISTINCT`, window/set operations, recursive CTEs, `:materialized` CTEs, or correlated subqueries. |
 | `INSERT` | No `:on_conflict`/`:returning` (ClickHouse has no upsert or `RETURNING`). |
 | `UPDATE`/`DELETE` | Not supported via `Repo.update!/1`/`delete!/1` -- ClickHouse mutates asynchronously via `ALTER TABLE ... UPDATE`/`DELETE`. `Repo.delete_all/2` is a narrow exception (single table, no joins/`LIMIT`/`OFFSET`), used by `Ecto.Migrator`'s rollback bookkeeping. |
-| Migrations | `CREATE`/`DROP TABLE` with plain `:add` columns. No `:alter`, indexes, or constraints -- use `execute/1` for anything else. |
+| Migrations | `CREATE`/`DROP TABLE` with plain `:add` columns, plus `Enum8`/named `Tuple`/`Variant`/`AggregateFunction`/`SimpleAggregateFunction` column-type builders, `TTL`, `ALIAS` computed columns, and `create_materialized_view/2`/`create_view/2` helpers (the `SELECT` body stays raw SQL). No `:alter`, indexes, or constraints -- use `execute/1` for anything else. |
 
 For the exhaustive breakdown (and why), see the moduledocs of
 `Ecto.Adapters.ClickHouse`, `Ecto.Adapters.ClickHouse.Connection`, and

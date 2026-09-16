@@ -4,6 +4,27 @@ All notable changes to `clickhouse_adapter_ecto` are documented here.
 
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.6.0 - 2026-09-16
+
+### Added
+
+- Migration DSL support for several ClickHouse-specific features that
+  previously required raw `execute/1` SQL:
+  - `Ecto.Adapters.ClickHouse.Migration.enum8/1`, `tuple/1`, `variant/1`,
+    `aggregate_function/2`, and `simple_aggregate_function/2` -- validated
+    builders for `Enum8`, named `Tuple`, `Variant`, `AggregateFunction`, and
+    `SimpleAggregateFunction` column types, usable directly in `add/3`
+    (including nested, e.g. a `Tuple` field typed `Array(Tuple(...))`).
+  - `table_options/1` gains a `:ttl` option, rendered in ClickHouse's clause
+    order (`ENGINE`/`PARTITION BY`/`ORDER BY`/`TTL`/`SETTINGS`).
+  - `add/3` accepts an `:alias` option to emit ClickHouse `ALIAS` computed
+    columns (`<name> <type> ALIAS <expr>`), rejecting the combination of
+    `:alias` with `:default` or an explicit `null: true`.
+  - `create_materialized_view/2` and `create_view/2` -- thin `CREATE`/`DROP`
+    boilerplate helpers for materialized views and plain views. The `SELECT`
+    body is always a raw SQL string; `drop_if_exists(table(name))` tears
+    down either.
+
 ## 0.5.0 - 2026-08-30
 
 ### Added
