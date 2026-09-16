@@ -53,6 +53,35 @@ defmodule Ecto.Adapters.ClickHouse.MigrationTest do
                "ENGINE = MergeTree SETTINGS comment = 'it''s fine'"
     end
 
+    test "renders ttl" do
+      assert Migration.table_options(
+               engine: "ReplacingMergeTree(timestamp)",
+               order_by: "(id)",
+               ttl: "timestamp + toIntervalYear(2)"
+             ) ==
+               "ENGINE = ReplacingMergeTree(timestamp) ORDER BY (id) TTL timestamp + toIntervalYear(2)"
+    end
+
+    test "renders ttl before settings, matching ClickHouse's own clause order" do
+      assert Migration.table_options(
+               engine: "MergeTree",
+               order_by: "id",
+               ttl: "inserted_at + toIntervalMonth(1)",
+               settings: [index_granularity: 8192]
+             ) ==
+               "ENGINE = MergeTree ORDER BY id TTL inserted_at + toIntervalMonth(1) SETTINGS index_granularity = 8192"
+    end
+
+    test "raises when :ttl is not a non-empty string" do
+      assert_raise ArgumentError, ~r/"TTL" clause must be a non-empty string/, fn ->
+        Migration.table_options(engine: "MergeTree", ttl: "")
+      end
+
+      assert_raise ArgumentError, ~r/"TTL" clause must be a non-empty string/, fn ->
+        Migration.table_options(engine: "MergeTree", ttl: :not_a_string)
+      end
+    end
+
     test "renders engine, partition_by, order_by, and settings together in ClickHouse's clause order" do
       assert Migration.table_options(
                engine: "MergeTree",
