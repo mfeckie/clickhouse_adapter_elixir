@@ -118,11 +118,11 @@ defmodule Ecto.Adapters.ClickHouse.Migration do
   """
   @type setting_value :: String.t() | number() | boolean() | {:system, String.t()}
 
-  @valid_table_options_keys [:engine, :partition_by, :order_by, :settings]
+  @valid_table_options_keys [:engine, :partition_by, :order_by, :ttl, :settings]
 
   @doc """
   Builds the options string `table/2`'s `options:` expects (everything
-  after the column list: `ENGINE`, `PARTITION BY`, `ORDER BY`,
+  after the column list: `ENGINE`, `PARTITION BY`, `ORDER BY`, `TTL`,
   `SETTINGS`), from a keyword list instead of a hand-quoted raw string.
 
   ## Options
@@ -131,6 +131,8 @@ defmodule Ecto.Adapters.ClickHouse.Migration do
       or a full engine expression like `"Kafka"`.
     * `:partition_by` -- rendered as `PARTITION BY <value>`.
     * `:order_by` -- rendered as `ORDER BY <value>`.
+    * `:ttl` -- rendered as `TTL <value>`, e.g.
+      `"timestamp + toIntervalYear(2)"`.
     * `:settings` -- a keyword list of `key: value` pairs, rendered as
       `SETTINGS key1 = 'value1', key2 = value2, ...`. String values are
       single-quoted; numbers and booleans are not. A value can also be
@@ -139,8 +141,8 @@ defmodule Ecto.Adapters.ClickHouse.Migration do
       example.
 
   Clause order in the rendered string (`ENGINE` · `PARTITION BY` ·
-  `ORDER BY` · `SETTINGS`) matches ClickHouse's own `CREATE TABLE` clause
-  order; only clauses that were given are included.
+  `ORDER BY` · `TTL` · `SETTINGS`) matches ClickHouse's own `CREATE
+  TABLE` clause order; only clauses that were given are included.
 
       iex> Ecto.Adapters.ClickHouse.Migration.table_options(engine: "MergeTree", order_by: "id")
       "ENGINE = MergeTree ORDER BY id"
@@ -152,6 +154,13 @@ defmodule Ecto.Adapters.ClickHouse.Migration do
       ...>   settings: [index_granularity: 8192]
       ...> )
       "ENGINE = MergeTree PARTITION BY toYYYYMM(inserted_at) ORDER BY id SETTINGS index_granularity = 8192"
+
+      iex> Ecto.Adapters.ClickHouse.Migration.table_options(
+      ...>   engine: "ReplacingMergeTree(timestamp)",
+      ...>   order_by: "(id)",
+      ...>   ttl: "timestamp + toIntervalYear(2)"
+      ...> )
+      "ENGINE = ReplacingMergeTree(timestamp) ORDER BY (id) TTL timestamp + toIntervalYear(2)"
 
   Raises `ArgumentError` if `:engine` is missing, if an unrecognized
   top-level option key is given, if `:settings` isn't a keyword list, if
@@ -167,6 +176,7 @@ defmodule Ecto.Adapters.ClickHouse.Migration do
       "ENGINE = #{engine}",
       optional_clause("PARTITION BY", Keyword.get(opts, :partition_by)),
       optional_clause("ORDER BY", Keyword.get(opts, :order_by)),
+      optional_clause("TTL", Keyword.get(opts, :ttl)),
       settings_clause(Keyword.get(opts, :settings))
     ]
     |> Enum.reject(&is_nil/1)
