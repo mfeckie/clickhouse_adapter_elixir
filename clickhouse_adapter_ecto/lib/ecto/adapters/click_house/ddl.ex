@@ -321,19 +321,20 @@ defmodule Ecto.Adapters.ClickHouse.DDL do
 
     cond do
       Keyword.has_key?(opts, :default) ->
-        raise ArgumentError,
-              "column #{inspect(name)} can't combine :alias with :default -- ALIAS and " <>
-                "DEFAULT are mutually exclusive ClickHouse column modifiers (ALIAS is " <>
-                "computed on read and never stored, DEFAULT is stored and only computed " <>
-                "when no value is supplied on INSERT). Pick one."
+        raise ArgumentError, "
+        column #{inspect(name)} can't combine :alias with :default -- ALIAS and DEFAULT are
+        mutually exclusive ClickHouse column modifiers (ALIAS is computed on read and never
+        stored, DEFAULT is stored and only computed when no value is supplied on INSERT).
+        Pick one.
+        "
 
       Keyword.get(opts, :null) == true ->
-        raise ArgumentError,
-              "column #{inspect(name)} can't combine :alias with null: true -- ClickHouse " <>
-                "ALIAS columns are computed on read and are never Nullable-wrapped, " <>
-                "regardless of :null. Drop the :null option for this column (or pass " <>
-                "null: false if you want to document that intent -- it has no effect on " <>
-                "the emitted DDL either way)."
+        raise ArgumentError, "
+        column #{inspect(name)} can't combine :alias with null: true -- ClickHouse ALIAS
+        columns are computed on read and are never Nullable-wrapped, regardless of :null.
+        Drop the :null option for this column (or pass null: false if you want to document
+        that intent -- it has no effect on the emitted DDL either way).
+        "
 
       true ->
         :ok
