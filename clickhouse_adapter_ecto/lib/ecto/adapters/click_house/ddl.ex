@@ -74,27 +74,6 @@ defmodule Ecto.Adapters.ClickHouse.DDL do
 
           execute(\"\"\"
           CREATE TABLE events_queue (id UInt64, payload String)
-          ENGINE = Kafka
-          SETTINGS kafka_broker_list = 'kafka:9092',
-                   kafka_topic_list = 'events',
-                   kafka_group_name = 'events_consumer',
-                   kafka_format = 'JSONEachRow'
-          \"\"\")
-
-          execute(\"\"\"
-          CREATE MATERIALIZED VIEW events_mv TO events AS
-          SELECT id, payload FROM events_queue
-          \"\"\")
-
-      Hand-quoting that `SETTINGS` clause is tedious and error-prone once
-      it has several key/value pairs -- build it with
-      `Ecto.Adapters.ClickHouse.Migration.table_options/1` instead, which
-      also supports pulling values like `kafka_broker_list` from the
-      environment at migration-run time via `{:system, "ENV_VAR"}` rather
-      than committing them as a literal string:
-
-          execute(\"\"\"
-          CREATE TABLE events_queue (id UInt64, payload String)
           \#{Ecto.Adapters.ClickHouse.Migration.table_options(
             engine: "Kafka",
             settings: [
@@ -106,6 +85,30 @@ defmodule Ecto.Adapters.ClickHouse.DDL do
           )}
           \"\"\")
 
+          execute(
+            Ecto.Adapters.ClickHouse.Migration.create_materialized_view(:events_mv,
+              to: :events,
+              as: "SELECT id, payload FROM events_queue"
+            )
+          )
+
+      Hand-quoting that `SETTINGS` clause is tedious and error-prone once
+      it has several key/value pairs -- `table_options/1` builds it from a
+      keyword list instead, and also supports pulling values like
+      `kafka_broker_list` from the environment at migration-run time via
+      `{:system, "ENV_VAR"}` rather than committing them as a literal
+      string (as shown above). `create_materialized_view/2` (and its
+      non-materialized counterpart `create_view/2`) similarly replace the
+      hand-written `CREATE MATERIALIZED VIEW ... TO ... AS ...`/
+      `CREATE VIEW ... AS ...` boilerplate with a validated, correctly
+      quoted `IF NOT EXISTS` shell -- but only the shell: the `SELECT`
+      body passed as `:as` is, and stays, a raw SQL string. `ARRAY JOIN`,
+      `multiIf`, `transform`, `CAST`, aggregate combinators, `GROUP BY`,
+      and the rest of the query logic that goes into that `SELECT` are
+      genuinely open-ended and out of scope for any DSL here -- these
+      helpers only ever remove the `CREATE ... IF NOT EXISTS <name>
+      [TO <target>] AS` wrapper around it.
+
       Only the explicit `... TO target_table AS SELECT ...` view form is
       supported; the implicit-target-table form
       (`ENGINE = ... AS SELECT ...`) creates a hidden backing table with a
@@ -114,6 +117,10 @@ defmodule Ecto.Adapters.ClickHouse.DDL do
       Tear down in reverse: view, then Kafka table, then target table --
       dropping the target table while the view is still live leaves
       ingestion silently stalled with no error surfaced anywhere.
+      `drop_if_exists(table(name))` (this module's own `DROP TABLE IF
+      EXISTS`) tears down a materialized view or a plain view exactly the
+      same as any other table -- ClickHouse allows `DROP TABLE` on views,
+      so no separate `drop_materialized_view`/`drop_view` helper exists.
 
   ## ClickHouse-specific column types
 
