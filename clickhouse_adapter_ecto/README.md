@@ -131,6 +131,14 @@ table matters for performance. See the "`ORDER BY`/`PRIMARY KEY` is not a
 Postgres-style primary key" section of `Ecto.Adapters.ClickHouse.DDL`'s
 moduledoc for the full write-up.
 
+## Replicated clusters
+
+`mix ecto.create` creates an `Atomic` database on one server by default. Set
+`database_engine: "Replicated"` and `cluster: "{cluster}"` on the repo to
+create it with `ON CLUSTER ... ENGINE = Replicated` instead, so tables and
+`schema_migrations` replicate. Migrations take no lock, so run them from one
+place. See the "Replicated clusters" section of `Ecto.Adapters.ClickHouse`.
+
 ## Testing
 
 `Ecto.Adapters.SQL.Sandbox` doesn't work here -- this adapter has no

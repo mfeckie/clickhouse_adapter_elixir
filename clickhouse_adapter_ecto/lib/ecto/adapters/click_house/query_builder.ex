@@ -12,10 +12,11 @@ defmodule Ecto.Adapters.ClickHouse.QueryBuilder do
   instead.
 
   `delete_all/1` is supported, but narrowly: it compiles to
-  `ALTER TABLE ... DELETE WHERE ... SETTINGS mutations_sync = 1`, which
+  `ALTER TABLE ... DELETE WHERE ... SETTINGS mutations_sync = 2`, which
   only accepts a single source table and no joins/`LIMIT`/`OFFSET` --
-  queries outside that shape raise. `mutations_sync = 1` makes the call
-  block until the mutation is actually applied, which is what lets
+  queries outside that shape raise. `mutations_sync = 2` makes the call
+  block until the mutation is actually applied on every replica (just the
+  one server for a non-replicated table), which is what lets
   `Repo.delete_all/2` behave synchronously (useful in a migration's
   `down/0`) at the cost of not scaling to large bulk deletes -- prefer a
   raw, unsynchronized `ALTER TABLE ... DELETE` for those.
@@ -134,9 +135,9 @@ defmodule Ecto.Adapters.ClickHouse.QueryBuilder do
   ## ClickHouse has no synchronous `DELETE`; row removal goes through the
   ## `ALTER TABLE ... DELETE WHERE ...` mutation, which is queued and applied
   ## in the background by default. However, that mutation accepts a
-  ## `SETTINGS mutations_sync = 1` clause that makes the *issuing client*
-  ## block until the mutation has actually been applied locally before the
-  ## query returns. That's exactly
+  ## `SETTINGS mutations_sync = 2` clause that makes the *issuing client*
+  ## block until the mutation has actually been applied on every replica
+  ## before the query returns. That's exactly
   ## what's needed to make `Ecto.Migration.SchemaMigration`'s `down/4`'s
   ## `repo.delete_all(from m in "schema_migrations", where: m.version == ^v)`
   ## behave synchronously enough for `Ecto.Migrator.run(repo, path, :down,
@@ -150,10 +151,10 @@ defmodule Ecto.Adapters.ClickHouse.QueryBuilder do
   ##   * a single source table (no joins)
   ##   * no LIMIT/OFFSET (mutations have no concept of either)
   ##
-  ## `mutations_sync = 1` only waits for the mutation to finish on the node
-  ## that received the query -- on a replicated/multi-node cluster you'd want
-  ## `mutations_sync = 2` to wait for all replicas; this adapter only targets
-  ## single-node ClickHouse, so `1` is sufficient and cheaper. General
+  ## `mutations_sync = 1` would only wait for the node that received the
+  ## query, so in a `Replicated` database a migrator reading from another
+  ## replica could still see a rolled-back `schema_migrations` row. `2`
+  ## waits for all replicas and behaves like `1` on a single node. General
   ## multi-row bulk-delete workloads on large MergeTree tables should still
   ## prefer an unsynchronized `ALTER TABLE ... DELETE` (fire-and-forget) via
   ## a raw query instead of this -- forcing every mutation to block until
@@ -215,7 +216,7 @@ defmodule Ecto.Adapters.ClickHouse.QueryBuilder do
       table_sql,
       " DELETE",
       where_clause,
-      " SETTINGS mutations_sync = 1"
+      " SETTINGS mutations_sync = 2"
     ]
   end
 

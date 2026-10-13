@@ -76,6 +76,33 @@ defmodule Ecto.Adapters.ClickHouse do
   `Ecto.UUID`'s `dump/1` produces a raw binary ClickHouse rejects.
   `Ecto.UUID.generate/0` still works fine for generating the value itself.
 
+  ## Replicated clusters
+
+  `mix ecto.create` runs a plain `CREATE DATABASE`, which creates an
+  `Atomic` database on whichever server the connection reached. For a
+  replicated cluster, set the database engine and cluster so it is created
+  on every replica:
+
+      config :my_app, MyApp.Repo,
+        database: "my_app",
+        database_engine: "Replicated",
+        cluster: "{cluster}"
+
+  renders `CREATE DATABASE "my_app" ON CLUSTER '{cluster}' ENGINE = Replicated`
+  (and `mix ecto.drop` adds the same `ON CLUSTER`). Both options are
+  optional and independent. Tables created by migrations inside a
+  `Replicated` database become `Replicated*` automatically, including
+  `schema_migrations`.
+
+  `storage_up/1`, `storage_down/1` and `storage_status/1` connect to the
+  `:maintenance_database` (default `"default"`), since the target database
+  may not exist yet. Point it at a database the user can access if it has
+  no grants on `default`.
+
+  Migrations take no lock (ClickHouse has no lock primitive to build one
+  on), so run them from a single place, such as one release task or job,
+  rather than from every node at boot.
+
   ## Querying
 
       import Ecto.Query
@@ -210,10 +237,7 @@ defmodule Ecto.Adapters.ClickHouse do
         {:error, :already_up}
 
       {:ok, _} ->
-        case run_storage_query(
-               ~s(CREATE DATABASE #{Ecto.Adapters.ClickHouse.Naming.quote_name(database)}),
-               opts
-             ) do
+        case run_storage_query(create_database_sql(database, opts), opts) do
           {:ok, _} -> :ok
           {:error, error} -> {:error, Exception.message(error)}
         end
@@ -227,10 +251,7 @@ defmodule Ecto.Adapters.ClickHouse do
   def storage_down(opts) do
     database = fetch_database!(opts)
 
-    case run_storage_query(
-           ~s(DROP DATABASE #{Ecto.Adapters.ClickHouse.Naming.quote_name(database)}),
-           opts
-         ) do
+    case run_storage_query(drop_database_sql(database, opts), opts) do
       {:ok, _} ->
         :ok
 
@@ -260,6 +281,46 @@ defmodule Ecto.Adapters.ClickHouse do
     end
   end
 
+  @doc false
+  def create_database_sql(database, opts) do
+    engine =
+      case Keyword.get(opts, :database_engine) do
+        nil -> ""
+        engine when is_binary(engine) and engine != "" -> " ENGINE = " <> engine
+        other -> raise ArgumentError, ":database_engine must be a string, got: #{inspect(other)}"
+      end
+
+    IO.iodata_to_binary([
+      "CREATE DATABASE ",
+      Ecto.Adapters.ClickHouse.Naming.quote_name(database),
+      on_cluster(opts),
+      engine
+    ])
+  end
+
+  @doc false
+  def drop_database_sql(database, opts) do
+    IO.iodata_to_binary([
+      "DROP DATABASE ",
+      Ecto.Adapters.ClickHouse.Naming.quote_name(database),
+      on_cluster(opts)
+    ])
+  end
+
+  # A string literal rather than an identifier so macros like '{cluster}' expand.
+  defp on_cluster(opts) do
+    case Keyword.get(opts, :cluster) do
+      nil ->
+        ""
+
+      cluster when is_binary(cluster) and cluster != "" ->
+        " ON CLUSTER " <> quote_literal(cluster)
+
+      other ->
+        raise ArgumentError, ":cluster must be a string, got: #{inspect(other)}"
+    end
+  end
+
   defp fetch_database!(opts) do
     case Keyword.fetch(opts, :database) do
       {:ok, database} when is_binary(database) ->
@@ -273,8 +334,9 @@ defmodule Ecto.Adapters.ClickHouse do
   # A short-lived, unpooled ChDriver connection used only for
   # CREATE/DROP/system.databases maintenance queries -- entirely separate
   # from the Repo's normal connection pool (which may not even be started
-  # yet, e.g. during `mix ecto.create`). Always connects with `database:
-  # "default"` regardless of the repo's configured target database: that
+  # yet, e.g. during `mix ecto.create`). Always connects with `database:`
+  # set to `:maintenance_database` (default `"default"`) regardless of the
+  # repo's configured target database: that
   # target database is exactly what we may be about to create or drop, and
   # ClickHouse's native-protocol handshake only uses `:database` to pick an
   # *unqualified-name* default for the session, not to require its
@@ -284,7 +346,7 @@ defmodule Ecto.Adapters.ClickHouse do
     connect_opts =
       opts
       |> Keyword.take([:hostname, :port, :username, :password, :connect_timeout, :recv_timeout])
-      |> Keyword.put(:database, "default")
+      |> Keyword.put(:database, Keyword.get(opts, :maintenance_database, "default"))
 
     case ChDriver.start_link(connect_opts) do
       {:ok, conn} ->
@@ -323,10 +385,10 @@ defmodule Ecto.Adapters.ClickHouse do
   # Postgres's `pg_advisory_lock` (which MyXQL emulates with
   # `GET_LOCK`/`RELEASE_LOCK`) -- there is nothing to take a real lock
   # *with* here without inventing and maintaining a dedicated
-  # lock-row/lock-table protocol ourselves. For a single-node dev setup (the
-  # only target of this phase) concurrent migrators aren't a realistic
-  # concern, so this is a deliberate, documented no-op: just run the
-  # function. Revisit with a real dedicated lock table (e.g. a `TinyLog`
+  # lock-row/lock-table protocol ourselves. A lock table wouldn't help on a
+  # replicated cluster either, since replicas see each other's inserts
+  # asynchronously. So this is a deliberate, documented no-op (see the
+  # moduledoc's "Replicated clusters" section): just run the function. Revisit with a real dedicated lock table (e.g. a `TinyLog`
   # table holding one row per lock name, acquired with an `INSERT` + a
   # uniqueness check) if/when multi-node concurrent migrations become a
   # real requirement.

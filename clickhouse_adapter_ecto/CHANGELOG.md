@@ -4,6 +4,22 @@ All notable changes to `clickhouse_adapter_ecto` are documented here.
 
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+### Added
+
+- `:database_engine` and `:cluster` repo options for `storage_up/1` and
+  `storage_down/1`, so `mix ecto.create` can create a `Replicated` database
+  `ON CLUSTER`.
+- `:maintenance_database` repo option (default `"default"`) for the
+  database the storage functions connect to.
+
+### Changed
+
+- `delete_all/2` uses `mutations_sync = 2`, waiting for every replica
+  rather than only the receiving server. Behaviour on a single node is
+  unchanged.
+
 ## 0.6.0 - 2026-09-16
 
 ### Added
