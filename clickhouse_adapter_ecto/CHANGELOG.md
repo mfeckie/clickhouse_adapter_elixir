@@ -16,12 +16,18 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   `"ReplicatedMergeTree"` so `schema_migrations` replicates.
 - `:maintenance_database` repo option (default `"default"`) for the
   database the storage functions connect to.
+- `:cluster_ddl_timeout` repo option (default `60_000` ms) capping how long
+  `ON CLUSTER` storage DDL waits for every host.
 
 ### Changed
 
 - `delete_all/2` uses `mutations_sync = 2`, waiting for every replica
   rather than only the receiving server. Behaviour on a single node is
-  unchanged.
+  unchanged. If a replica is down, it logs a warning and returns once the
+  live replicas have applied the delete.
+- `storage_down/1` drops with `SYNC`.
+- `table/2`'s `:engine` combines with `options:` that leave the engine out;
+  setting it alongside `options:` that start with `ENGINE` raises.
 
 ## 0.6.0 - 2026-09-16
 

@@ -104,5 +104,24 @@ defmodule Ecto.Adapters.ClickHouse.DDLTest do
       assert [sql] = DDL.execute_ddl({:create_if_not_exists, table, @columns})
       assert sql =~ ~s[ENGINE = ReplicatedMergeTree ORDER BY ("version")]
     end
+
+    test "puts the table's :engine in front of options that have no ENGINE" do
+      table = %Table{name: :t, engine: "ReplicatedMergeTree", options: "ORDER BY id"}
+
+      assert [sql] = DDL.execute_ddl({:create, table, @columns})
+      assert sql =~ ~r/\) ENGINE = ReplicatedMergeTree ORDER BY id$/
+    end
+
+    test "rejects an :engine alongside options that already set ENGINE" do
+      table = %Table{
+        name: :t,
+        engine: "ReplicatedMergeTree",
+        options: "ENGINE = MergeTree ORDER BY id"
+      }
+
+      assert_raise ArgumentError, ~r/both :engine and an ENGINE in :options/, fn ->
+        DDL.execute_ddl({:create, table, @columns})
+      end
+    end
   end
 end

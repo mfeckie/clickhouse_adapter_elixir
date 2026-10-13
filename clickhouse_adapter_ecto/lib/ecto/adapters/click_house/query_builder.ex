@@ -19,7 +19,11 @@ defmodule Ecto.Adapters.ClickHouse.QueryBuilder do
   one server for a non-replicated table), which is what lets
   `Repo.delete_all/2` behave synchronously (useful in a migration's
   `down/0`) at the cost of not scaling to large bulk deletes -- prefer a
-  raw, unsynchronized `ALTER TABLE ... DELETE` for those.
+  raw, unsynchronized `ALTER TABLE ... DELETE` for those. If a replica is
+  down, ClickHouse applies the mutation on the live replicas, queues it for
+  the down one and raises `UNFINISHED`; `Repo.delete_all/2` logs a warning
+  and returns normally instead, so a migration rollback isn't reported as
+  failed (and then repeated) after its `schema_migrations` row is gone.
 
   `insert/8` doesn't support `:on_conflict` (no native upsert -- use
   `ReplacingMergeTree`/`CollapsingMergeTree` engines instead) or
@@ -31,6 +35,8 @@ defmodule Ecto.Adapters.ClickHouse.QueryBuilder do
   explicitly out of scope (recursive CTEs, `:materialized`, non-`:all`
   operations) and why.
   """
+
+  @delete_all_settings " SETTINGS mutations_sync = 2"
 
   alias Ecto.Adapters.ClickHouse.{Connection, Expression, Naming}
   alias Ecto.Query.{QueryExpr, WithExpr}
@@ -216,8 +222,15 @@ defmodule Ecto.Adapters.ClickHouse.QueryBuilder do
       table_sql,
       " DELETE",
       where_clause,
-      " SETTINGS mutations_sync = 2"
+      @delete_all_settings
     ]
+  end
+
+  @doc false
+  def delete_all_mutation?(statement) do
+    String.starts_with?(statement, "ALTER TABLE ") and
+      String.contains?(statement, " DELETE WHERE ") and
+      String.ends_with?(statement, @delete_all_settings)
   end
 
   @doc false

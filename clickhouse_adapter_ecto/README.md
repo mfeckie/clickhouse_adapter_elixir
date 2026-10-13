@@ -138,7 +138,9 @@ moduledoc for the full write-up.
 create it with `ON CLUSTER ... ENGINE = Replicated` instead. Tables still need
 `Replicated*MergeTree` engines to replicate their data, so also set
 `default_table_engine: "ReplicatedMergeTree"` for `schema_migrations`.
-Migrations take no lock, so run them from one place. See the "Replicated clusters" section of `Ecto.Adapters.ClickHouse`.
+Migrations take no lock, so run them from one place, and need every
+replica up. See the "Replicated clusters" section of
+`Ecto.Adapters.ClickHouse`.
 
 ## Testing
 

@@ -20,6 +20,11 @@ defmodule Ecto.Adapters.ClickHouse.Connection do
 
   alias Ecto.Adapters.ClickHouse.QueryBuilder
 
+  require Logger
+
+  # ClickHouse's UNFINISHED error code.
+  @unfinished 341
+
   ## Connection
 
   @impl true
@@ -39,9 +44,18 @@ defmodule Ecto.Adapters.ClickHouse.Connection do
     # struct is what `Ecto.Adapters.SQL`'s query cache holds onto and later
     # passes back into `execute/4` below -- that's what skips re-parsing on
     # every subsequent execution of the same prepared query.
-    case DBConnection.prepare_execute(conn, %ChDriver.Query{statement: statement}, params, opts) do
-      {:ok, query, result} -> {:ok, query, to_sql_result(result)}
-      {:error, _} = error -> error
+    query = %ChDriver.Query{statement: statement}
+
+    case DBConnection.prepare_execute(conn, query, params, opts) do
+      {:ok, query, result} ->
+        {:ok, query, to_sql_result(result)}
+
+      {:error, error} = result ->
+        # Ecto caches the returned struct and later hands it to execute/4,
+        # which skips parse/2, so it must come back parsed.
+        if unfinished_delete_all?(statement, error),
+          do: {:ok, DBConnection.Query.parse(query, opts), unfinished_result(statement, error)},
+          else: result
     end
   end
 
@@ -52,13 +66,38 @@ defmodule Ecto.Adapters.ClickHouse.Connection do
     # `encode/3` (using its cached `param_names`) and `handle_execute/4`,
     # not `parse/2` again.
     case DBConnection.execute(conn, query, params, opts) do
-      {:ok, _query, result} -> {:ok, to_sql_result(result)}
-      {:error, _} = error -> error
+      {:ok, _query, result} ->
+        {:ok, to_sql_result(result)}
+
+      {:error, error} = result ->
+        if unfinished_delete_all?(query.statement, error),
+          do: {:ok, unfinished_result(query.statement, error)},
+          else: result
     end
   end
 
   def execute(conn, statement, params, opts) when is_binary(statement) do
     execute(conn, %ChDriver.Query{statement: statement}, params, opts)
+  end
+
+  # delete_all's `mutations_sync = 2` raises UNFINISHED when a replica is
+  # inactive, after the mutation is applied on the active ones and queued
+  # for the rest. Reporting that as a failure would make a migration
+  # rollback look failed after its schema_migrations row is already gone,
+  # and re-running it would roll back the migration before.
+  @doc false
+  def unfinished_delete_all?(statement, %ChDriver.Error{code: @unfinished}),
+    do: QueryBuilder.delete_all_mutation?(statement)
+
+  def unfinished_delete_all?(_statement, _error), do: false
+
+  defp unfinished_result(statement, error) do
+    Logger.warning(
+      "#{statement} is applied on active replicas only; inactive replicas will " <>
+        "apply it when they return (#{Exception.message(error)})"
+    )
+
+    %{columns: [], rows: [], num_rows: 0}
   end
 
   @impl true

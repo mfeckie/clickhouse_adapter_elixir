@@ -1,7 +1,10 @@
 # Two ClickHouse replicas and a Keeper, for the `:cluster`-tagged tests
 # (`mix test --only cluster`). Replicas publish on 29001/29002 (override with
 # CH_CLUSTER_PORT_1/CH_CLUSTER_PORT_2) so it can run alongside
-# docker-compose.yml.
+# docker-compose.yml. Its own project name keeps `down` on one file from
+# touching the other's containers and network.
+name: clickhouse_adapter_ecto_cluster
+
 x-clickhouse: &clickhouse
   image: clickhouse/clickhouse-server:26.7
   depends_on:

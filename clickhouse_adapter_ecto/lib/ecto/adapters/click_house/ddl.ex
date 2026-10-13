@@ -149,7 +149,12 @@ defmodule Ecto.Adapters.ClickHouse.DDL do
   columns>)` (or `ORDER BY tuple()` with none). The engine in that default
   comes from `table/2`'s `:engine` option, else the repo's
   `:default_table_engine` config (e.g. `"ReplicatedMergeTree"` in a
-  `Replicated` database), else `MergeTree`. That default is fine for
+  `Replicated` database), else `MergeTree`. `:engine` also combines with
+  `options:` that leave the engine out: `engine: "ReplicatedMergeTree",
+  options: "ORDER BY id"` renders `ENGINE = ReplicatedMergeTree ORDER BY
+  id`, and so does a repo default with those options. Setting `:engine`
+  alongside `options:` that already start with `ENGINE` raises, since one
+  of them would be ignored. That default is fine for
   `schema_migrations` and quick dev tables, but MergeTree's sort key is a
   real modeling decision for anything performance-sensitive -- pick it
   explicitly once that matters.
@@ -255,7 +260,23 @@ defmodule Ecto.Adapters.ClickHouse.DDL do
             "for anything else (ALTER TABLE, indexes, constraints, ...)."
   end
 
-  defp engine_clause(%Table{options: options}, _commands) when is_binary(options), do: options
+  @doc false
+  def options_set_engine?(options) when is_binary(options), do: options =~ ~r/\A\s*ENGINE\b/i
+  def options_set_engine?(_options), do: false
+
+  defp engine_clause(%Table{options: options, engine: nil}, _commands) when is_binary(options),
+    do: options
+
+  defp engine_clause(%Table{options: options, engine: engine, name: name}, _commands)
+       when is_binary(options) do
+    if options_set_engine?(options) do
+      raise ArgumentError,
+            "table #{inspect(name)} has both :engine and an ENGINE in :options " <>
+              "(#{inspect(options)}); set the engine in one place"
+    end
+
+    ["ENGINE = ", to_string(engine), " ", options]
+  end
 
   defp engine_clause(%Table{options: nil, engine: engine}, commands) do
     primary_key_columns =
