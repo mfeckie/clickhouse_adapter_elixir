@@ -3,17 +3,36 @@
 All notable changes to `clickhouse_adapter_ecto` are documented here.
 
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+From 1.0.0, a release with breaking changes bumps the major version, and
+those changes are listed under "Breaking changes".
 
-## Unreleased
+## 1.0.0 - 2026-10-13
+
+### Breaking changes
+
+- `table/2`'s `:engine` option is now used. Up to 0.6.0 it was ignored.
+  Migrations that set it change as follows:
+  - `engine: "X"` without `options:` creates the table with
+    `ENGINE = X ORDER BY ...` instead of `ENGINE = MergeTree ORDER BY ...`.
+  - `engine: "X"` with `options:` that leave out `ENGINE` (e.g.
+    `options: "ORDER BY id"`) renders `ENGINE = X ORDER BY id`; before, the
+    table got no `ENGINE` clause.
+  - `engine: "X"` with `options:` that start with `ENGINE` (including
+    `table_options/1` output) raises `ArgumentError`; before, `:engine` was
+    ignored. Remove one of the two.
+
+  Migrations that have already run are unaffected; the change shows up the
+  next time the migration runs against a fresh database.
 
 ### Added
 
 - `:database_engine` and `:cluster` repo options for `storage_up/1` and
   `storage_down/1`, so `mix ecto.create` can create a `Replicated` database
   `ON CLUSTER`.
-- `:default_table_engine` repo option, and `table/2`'s `:engine` option,
-  for tables created without explicit `options:`. Set it to
-  `"ReplicatedMergeTree"` so `schema_migrations` replicates.
+- `:default_table_engine` repo option, the engine for tables whose
+  definition sets none (no `:engine`, and no `ENGINE` in `options:`). Set it
+  to `"ReplicatedMergeTree"` so `schema_migrations` replicates. It can come
+  from config, `Repo.start_link/1` or the repo's `init/2`.
 - `:maintenance_database` repo option (default `"default"`) for the
   database the storage functions connect to.
 - `:cluster_ddl_timeout` repo option (default `60_000` ms) capping how long
@@ -26,8 +45,6 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   unchanged. If a replica is down, it logs a warning and returns once the
   live replicas have applied the delete.
 - `storage_down/1` drops with `SYNC`.
-- `table/2`'s `:engine` combines with `options:` that leave the engine out;
-  setting it alongside `options:` that start with `ENGINE` raises.
 
 ## 0.6.0 - 2026-09-16
 

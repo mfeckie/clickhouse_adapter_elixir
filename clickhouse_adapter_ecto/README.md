@@ -13,7 +13,7 @@ Documentation: https://hexdocs.pm/clickhouse_adapter_ecto/
 ```elixir
 def deps do
   [
-    {:clickhouse_adapter_ecto, "~> 0.3"}
+    {:clickhouse_adapter_ecto, "~> 1.0"}
   ]
 end
 ```
