@@ -7,10 +7,22 @@ defmodule Ecto.Adapters.ClickHouse.ReplicatedClusterTest do
 
   use ExUnit.Case, async: false
 
+  alias Ecto.Adapters.ClickHouse.TestSupport.Ports
+
   @moduletag :cluster
 
-  @replica1 [hostname: "localhost", port: 19000, username: "default", password: ""]
-  @replica2 [hostname: "localhost", port: 19001, username: "default", password: ""]
+  @replica1 [
+    hostname: "localhost",
+    port: Ports.cluster_replica(1),
+    username: "default",
+    password: ""
+  ]
+  @replica2 [
+    hostname: "localhost",
+    port: Ports.cluster_replica(2),
+    username: "default",
+    password: ""
+  ]
 
   defmodule TestRepo do
     use Ecto.Repo, otp_app: :clickhouse_adapter_ecto, adapter: Ecto.Adapters.ClickHouse

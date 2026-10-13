@@ -12,6 +12,8 @@ defmodule Ecto.Adapters.ClickHouse.DataSkippingIndexTest do
 
   use ExUnit.Case, async: false
 
+  alias Ecto.Adapters.ClickHouse.TestSupport.Ports
+
   @moduletag :integration
 
   defmodule TestRepo do
@@ -33,7 +35,7 @@ defmodule Ecto.Adapters.ClickHouse.DataSkippingIndexTest do
   end
 
   setup do
-    {:ok, ddl_conn} = ChDriver.start_link(hostname: "localhost", port: 9000)
+    {:ok, ddl_conn} = ChDriver.start_link(hostname: "localhost", port: Ports.clickhouse())
     ChDriver.query(ddl_conn, "DROP TABLE IF EXISTS metrics")
     ChDriver.query(ddl_conn, "DROP TABLE IF EXISTS schema_migrations")
 
@@ -52,7 +54,7 @@ defmodule Ecto.Adapters.ClickHouse.DataSkippingIndexTest do
     {:ok, _pid} =
       TestRepo.start_link(
         hostname: "localhost",
-        port: 9000,
+        port: Ports.clickhouse(),
         database: "default",
         username: "default",
         password: "",
@@ -60,7 +62,7 @@ defmodule Ecto.Adapters.ClickHouse.DataSkippingIndexTest do
       )
 
     on_exit(fn ->
-      {:ok, cleanup_conn} = ChDriver.start_link(hostname: "localhost", port: 9000)
+      {:ok, cleanup_conn} = ChDriver.start_link(hostname: "localhost", port: Ports.clickhouse())
       ChDriver.query(cleanup_conn, "DROP TABLE IF EXISTS metrics")
       ChDriver.query(cleanup_conn, "DROP TABLE IF EXISTS schema_migrations")
     end)

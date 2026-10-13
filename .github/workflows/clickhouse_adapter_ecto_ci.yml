@@ -34,14 +34,15 @@ jobs:
     # @moduletag :integration) exercises a real Ecto.Repo against ClickHouse,
     # including one Kafka table-engine ingestion test -- both services are
     # provisioned here with the same pinned images/ports/env
-    # clickhouse_adapter_ecto/docker-compose.yml uses locally, so CI and
+    # clickhouse_adapter_ecto/docker-compose.yml uses locally (its default
+    # host ports, which test/support/ports.ex also defaults to), so CI and
     # local dev stay identical.
     services:
       clickhouse:
         image: clickhouse/clickhouse-server:26.7
         ports:
-          - 9000:9000
-          - 8123:8123
+          - 29000:9000
+          - 28123:8123
         env:
           CLICKHOUSE_DB: default
           CLICKHOUSE_USER: default
@@ -56,12 +57,12 @@ jobs:
       kafka:
         image: apache/kafka:3.7.1
         ports:
-          - 9092:9092
+          - 39092:39092
         env:
           KAFKA_NODE_ID: 1
           KAFKA_PROCESS_ROLES: broker,controller
-          KAFKA_LISTENERS: PLAINTEXT://:9092,INTERNAL://:29092,CONTROLLER://:9093
-          KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:9092,INTERNAL://kafka:29092
+          KAFKA_LISTENERS: PLAINTEXT://:39092,INTERNAL://:29092,CONTROLLER://:9093
+          KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:39092,INTERNAL://kafka:29092
           KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,INTERNAL:PLAINTEXT
           KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
           KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
@@ -71,7 +72,7 @@ jobs:
           KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
           KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
         options: >-
-          --health-cmd "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092"
+          --health-cmd "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:39092"
           --health-interval 3s
           --health-timeout 5s
           --health-retries 30

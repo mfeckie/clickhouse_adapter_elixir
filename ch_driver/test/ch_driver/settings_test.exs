@@ -28,7 +28,7 @@ defmodule ChDriver.SettingsTest do
 
   describe "Connection.query/3 :settings opt" do
     test "async_insert=0 makes an INSERT durable before the response returns (checked via ChDriver.query/4)" do
-      {:ok, pool} = ChDriver.start_link(pool_size: 1)
+      {:ok, pool} = ChDriver.start_link(ChDriver.TestCase.connect_opts(pool_size: 1))
       table = "ch_driver_settings_test_#{System.unique_integer([:positive])}"
 
       {:ok, _} =
@@ -38,7 +38,7 @@ defmodule ChDriver.SettingsTest do
         )
 
       on_exit(fn ->
-        {:ok, conn} = Connection.connect()
+        {:ok, conn} = Connection.connect(ChDriver.TestCase.connect_opts())
         Connection.query(conn, "DROP TABLE IF EXISTS #{table}")
         Connection.close(conn.socket)
       end)
@@ -55,7 +55,7 @@ defmodule ChDriver.SettingsTest do
     end
 
     test "async_insert=1 with wait_for_async_insert=0 does NOT make the insert immediately visible (sanity check on the opposite setting)" do
-      {:ok, conn} = Connection.connect()
+      {:ok, conn} = Connection.connect(ChDriver.TestCase.connect_opts())
       table = "ch_driver_settings_test_#{System.unique_integer([:positive])}"
 
       {:ok, _} =
@@ -65,7 +65,7 @@ defmodule ChDriver.SettingsTest do
         )
 
       on_exit(fn ->
-        {:ok, conn} = Connection.connect()
+        {:ok, conn} = Connection.connect(ChDriver.TestCase.connect_opts())
         Connection.query(conn, "DROP TABLE IF EXISTS #{table}")
         Connection.close(conn.socket)
       end)
@@ -87,7 +87,7 @@ defmodule ChDriver.SettingsTest do
     end
 
     test "max_block_size chunks a large SELECT into multiple Data blocks" do
-      {:ok, conn} = Connection.connect()
+      {:ok, conn} = Connection.connect(ChDriver.TestCase.connect_opts())
       on_exit(fn -> Connection.close(conn.socket) end)
 
       {:ok, stream} =
@@ -104,7 +104,9 @@ defmodule ChDriver.SettingsTest do
 
   describe "connection-level default :settings, merged with per-call overrides" do
     test "Connection.connect/1's :settings applies to every query on that connection by default" do
-      {:ok, conn} = Connection.connect(settings: [{"max_block_size", "50"}])
+      {:ok, conn} =
+        Connection.connect(ChDriver.TestCase.connect_opts(settings: [{"max_block_size", "50"}]))
+
       on_exit(fn -> Connection.close(conn.socket) end)
 
       {:ok, stream} =
@@ -117,7 +119,9 @@ defmodule ChDriver.SettingsTest do
     end
 
     test "a per-call setting with the same name overrides the connection-level default" do
-      {:ok, conn} = Connection.connect(settings: [{"max_block_size", "50"}])
+      {:ok, conn} =
+        Connection.connect(ChDriver.TestCase.connect_opts(settings: [{"max_block_size", "50"}]))
+
       on_exit(fn -> Connection.close(conn.socket) end)
 
       {:ok, stream} =
@@ -142,7 +146,7 @@ defmodule ChDriver.SettingsTest do
 
   describe "ChDriver.stream/4 (public API, through the DBConnection/pool layer)" do
     test "settings: [{\"max_block_size\", \"50\"}] chunks the stream through the pool" do
-      {:ok, pool} = ChDriver.start_link(pool_size: 1)
+      {:ok, pool} = ChDriver.start_link(ChDriver.TestCase.connect_opts(pool_size: 1))
 
       {block_count, total_rows} =
         DBConnection.run(pool, fn conn ->

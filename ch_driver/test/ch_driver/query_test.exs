@@ -134,7 +134,7 @@ defmodule ChDriver.QueryTest do
       table = "ch_driver_insert_test_#{System.unique_integer([:positive])}"
 
       on_exit(fn ->
-        {:ok, conn} = Connection.connect()
+        {:ok, conn} = Connection.connect(ChDriver.TestCase.connect_opts())
         Connection.query(conn, "DROP TABLE IF EXISTS #{table}")
         Connection.close(conn.socket)
       end)

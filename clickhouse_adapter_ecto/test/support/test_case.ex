@@ -137,10 +137,9 @@ defmodule Ecto.Adapters.ClickHouse.TestCase do
   (evaluated at compile time in the caller, so plain literals -- not
   runtime-computed values -- are expected, same as any other ExUnit
   `setup`/`setup_all` block). `connect_opts` overrides/extends the default
-  connection options (`hostname: "localhost", port: 9000, username:
-  "default", password: ""`, `database: "default"`) used both for the
-  `Ecto.Repo` started here and the raw `ChDriver` connection used for
-  DDL/TRUNCATE.
+  connection options (`Ddl.default_connect_opts/0` plus `database:
+  "default"`) used both for the `Ecto.Repo` started here and the raw
+  `ChDriver` connection used for DDL/TRUNCATE.
   """
   defmacro setup_clickhouse_tables(repo, table_ddls, connect_opts \\ []) do
     quote bind_quoted: [repo: repo, table_ddls: table_ddls, connect_opts: connect_opts] do

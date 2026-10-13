@@ -176,6 +176,26 @@ For that, see `Ecto.Adapters.ClickHouse.ConcurrentTestCase`
 (per-connection temp-table shadowing) or a per-test-module database via
 `storage_up/1`/`storage_down/1` -- both documented in their own moduledocs.
 
+### Running this repo's suite
+
+```
+docker compose up -d --wait   # ClickHouse + Kafka
+mix test
+docker compose -f docker-compose.cluster.yml up -d --wait
+mix test --only cluster
+```
+
+The compose files publish on non-standard host ports so they can run
+alongside other local ClickHouse or Kafka containers. Set the variable before
+both `docker compose up` and `mix test` to move a port:
+
+| Service             | Default host port | Override                 |
+| ------------------- | ----------------- | ------------------------ |
+| ClickHouse native   | 29000             | `CH_NATIVE_PORT`         |
+| ClickHouse HTTP     | 28123             | `CH_HTTP_PORT`           |
+| Kafka               | 39092             | `KAFKA_HOST_PORT`        |
+| Cluster replica 1/2 | 29001 / 29002     | `CH_CLUSTER_PORT_1`/`_2` |
+
 ## Repo layout
 
 This repo is split into two Mix projects, layered bottom to top:

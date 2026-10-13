@@ -13,14 +13,14 @@ defmodule Mix.Tasks.Stress.Seed do
 
       mix stress.seed
       mix stress.seed --rows 1000000
-      mix stress.seed --rows 5000000 --host localhost --port 9000
+      mix stress.seed --rows 5000000 --host localhost --port 29000
 
   ## Options
 
     * `--rows` - fact-table (`page_views`) row count. Defaults to
       `5_000_000`.
     * `--host` - ClickHouse hostname. Defaults to `localhost`.
-    * `--port` - ClickHouse native TCP port. Defaults to `9000` (the
+    * `--port` - ClickHouse native TCP port. Defaults to `29000` (the
       docker-compose default in `clickhouse_adapter_ecto/docker-compose.yml`).
 
   Safe to re-run -- every table is dropped and recreated before seeding.
@@ -55,7 +55,7 @@ defmodule Mix.Tasks.Stress.Seed do
 
     rows = Keyword.get(opts, :rows, 5_000_000)
     host = Keyword.get(opts, :host, "localhost")
-    port = Keyword.get(opts, :port, 9000)
+    port = Keyword.get(opts, :port, 29000)
 
     Mix.shell().info("Connecting to ClickHouse at #{host}:#{port}...")
     {:ok, pool} = ChDriver.start_link(hostname: host, port: port, pool_size: 4)

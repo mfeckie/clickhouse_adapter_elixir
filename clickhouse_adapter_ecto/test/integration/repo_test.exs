@@ -13,6 +13,8 @@ defmodule Ecto.Adapters.ClickHouse.RepoIntegrationTest do
 
   use ExUnit.Case, async: false
 
+  alias Ecto.Adapters.ClickHouse.TestSupport.Ports
+
   defmodule TestRepo do
     use Ecto.Repo, otp_app: :clickhouse_adapter_ecto, adapter: Ecto.Adapters.ClickHouse
   end
@@ -32,14 +34,14 @@ defmodule Ecto.Adapters.ClickHouse.RepoIntegrationTest do
     {:ok, _pid} =
       TestRepo.start_link(
         hostname: "localhost",
-        port: 9000,
+        port: Ports.clickhouse(),
         database: "default",
         username: "default",
         password: "",
         pool_size: 2
       )
 
-    {:ok, ddl_conn} = ChDriver.start_link(hostname: "localhost", port: 9000)
+    {:ok, ddl_conn} = ChDriver.start_link(hostname: "localhost", port: Ports.clickhouse())
 
     {:ok, _} = ChDriver.query(ddl_conn, "DROP TABLE IF EXISTS events")
 
@@ -50,7 +52,7 @@ defmodule Ecto.Adapters.ClickHouse.RepoIntegrationTest do
       )
 
     on_exit(fn ->
-      {:ok, conn} = ChDriver.start_link(hostname: "localhost", port: 9000)
+      {:ok, conn} = ChDriver.start_link(hostname: "localhost", port: Ports.clickhouse())
       ChDriver.query(conn, "DROP TABLE IF EXISTS events")
     end)
 
@@ -58,7 +60,7 @@ defmodule Ecto.Adapters.ClickHouse.RepoIntegrationTest do
   end
 
   setup do
-    {:ok, conn} = ChDriver.start_link(hostname: "localhost", port: 9000)
+    {:ok, conn} = ChDriver.start_link(hostname: "localhost", port: Ports.clickhouse())
     {:ok, _} = ChDriver.query(conn, "TRUNCATE TABLE events")
     :ok
   end

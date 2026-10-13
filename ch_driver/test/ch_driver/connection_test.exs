@@ -8,7 +8,8 @@ defmodule ChDriver.ConnectionTest do
 
   describe "connect/1 against a live ClickHouse server" do
     test "performs the Hello handshake and returns real server info" do
-      assert {:ok, %{socket: socket, server_info: server_info}} = Connection.connect()
+      assert {:ok, %{socket: socket, server_info: server_info}} =
+               Connection.connect(ChDriver.TestCase.connect_opts())
 
       on_exit(fn -> :ok end)
       Connection.close(socket)
@@ -47,7 +48,7 @@ defmodule ChDriver.ConnectionTest do
     end
 
     test "ping/1 succeeds repeatedly on the same connection" do
-      assert {:ok, conn} = Connection.connect()
+      assert {:ok, conn} = Connection.connect(ChDriver.TestCase.connect_opts())
       on_exit(fn -> Connection.close(conn.socket) end)
 
       for _ <- 1..5 do

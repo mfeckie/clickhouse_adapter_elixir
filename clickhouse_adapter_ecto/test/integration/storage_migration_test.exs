@@ -11,9 +11,11 @@ defmodule Ecto.Adapters.ClickHouse.StorageMigrationTest do
 
   use ExUnit.Case, async: false
 
+  alias Ecto.Adapters.ClickHouse.TestSupport.Ports
+
   @moduletag :integration
 
-  @base_opts [hostname: "localhost", port: 9000, username: "default", password: ""]
+  @base_opts [hostname: "localhost", port: Ports.clickhouse(), username: "default", password: ""]
 
   defmodule TestRepo do
     use Ecto.Repo, otp_app: :clickhouse_adapter_ecto, adapter: Ecto.Adapters.ClickHouse
@@ -64,7 +66,7 @@ defmodule Ecto.Adapters.ClickHouse.StorageMigrationTest do
 
     assert :ok = Ecto.Adapters.ClickHouse.storage_up(opts)
 
-    {:ok, conn} = ChDriver.start_link(hostname: "localhost", port: 9000)
+    {:ok, conn} = ChDriver.start_link(hostname: "localhost", port: Ports.clickhouse())
 
     {:ok, %{rows: rows}} =
       ChDriver.query(conn, "SELECT engine FROM system.databases WHERE name = '#{database}'")
@@ -76,14 +78,14 @@ defmodule Ecto.Adapters.ClickHouse.StorageMigrationTest do
   end
 
   test "a real Ecto.Migration creates a table and records it in schema_migrations" do
-    {:ok, ddl_conn} = ChDriver.start_link(hostname: "localhost", port: 9000)
+    {:ok, ddl_conn} = ChDriver.start_link(hostname: "localhost", port: Ports.clickhouse())
     {:ok, _} = ChDriver.query(ddl_conn, "DROP TABLE IF EXISTS widgets")
     {:ok, _} = ChDriver.query(ddl_conn, "DROP TABLE IF EXISTS schema_migrations")
 
     {:ok, _pid} =
       TestRepo.start_link(
         hostname: "localhost",
-        port: 9000,
+        port: Ports.clickhouse(),
         database: "default",
         username: "default",
         password: "",
@@ -126,14 +128,14 @@ defmodule Ecto.Adapters.ClickHouse.StorageMigrationTest do
   end
 
   test "a change/0 migration's create table is fully reversible via Ecto.Migrator :down" do
-    {:ok, ddl_conn} = ChDriver.start_link(hostname: "localhost", port: 9000)
+    {:ok, ddl_conn} = ChDriver.start_link(hostname: "localhost", port: Ports.clickhouse())
     {:ok, _} = ChDriver.query(ddl_conn, "DROP TABLE IF EXISTS widgets")
     {:ok, _} = ChDriver.query(ddl_conn, "DROP TABLE IF EXISTS schema_migrations")
 
     {:ok, _pid} =
       TestRepo.start_link(
         hostname: "localhost",
-        port: 9000,
+        port: Ports.clickhouse(),
         database: "default",
         username: "default",
         password: "",

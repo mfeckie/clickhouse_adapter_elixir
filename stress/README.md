@@ -38,7 +38,7 @@ mix stress.seed --rows 5000000
 ```
 
 `--rows` controls the `page_views` row count (default `5_000_000`);
-`--host`/`--port` default to `localhost`/`9000` (the docker-compose
+`--host`/`--port` default to `localhost`/`29000` (the docker-compose
 defaults). The task drops and recreates all three tables first, so it's
 safe to re-run.
 

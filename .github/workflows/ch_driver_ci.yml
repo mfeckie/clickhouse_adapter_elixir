@@ -24,14 +24,15 @@ jobs:
     # ch_driver's test suite talks to a real ClickHouse server over the
     # native TCP protocol (no mocked transport), so CI needs a live instance.
     # Pinned to the same image/version adapter/docker-compose.yml uses
-    # locally, with the same ports so nothing else in the test suite needs
-    # to change between local dev and CI.
+    # locally, with the same host ports (29000/28123, the defaults
+    # test/support/test_case.ex's connect_opts/1 assumes) so nothing else in
+    # the test suite needs to change between local dev and CI.
     services:
       clickhouse:
         image: clickhouse/clickhouse-server:26.7
         ports:
-          - 9000:9000
-          - 8123:8123
+          - 29000:9000
+          - 28123:8123
         env:
           CLICKHOUSE_DB: default
           CLICKHOUSE_USER: default

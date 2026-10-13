@@ -139,7 +139,13 @@ end
 
 ## Developing on the Rust NIF
 
+The integration tests need the ClickHouse server from
+`clickhouse_adapter_ecto/docker-compose.yml`, which publishes on
+`localhost:29000` (set `CH_NATIVE_PORT` for both `docker compose up` and
+`mix test` to use another port).
+
 ```
+(cd ../clickhouse_adapter_ecto && docker compose up -d --wait)
 mix deps.get
 mix test
 cd native/ch_driver_native && cargo test

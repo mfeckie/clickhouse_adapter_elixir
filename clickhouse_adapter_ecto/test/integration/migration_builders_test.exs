@@ -17,6 +17,7 @@ defmodule Ecto.Adapters.ClickHouse.MigrationBuildersTest do
   @moduletag :integration
 
   alias Ecto.Adapters.ClickHouse.Migration
+  alias Ecto.Adapters.ClickHouse.TestSupport.Ports
 
   @table "adapter_migration_builders"
 
@@ -53,14 +54,14 @@ defmodule Ecto.Adapters.ClickHouse.MigrationBuildersTest do
   end
 
   test "a real Ecto.Migration creates the new builder column types against live ClickHouse" do
-    {:ok, ddl_conn} = ChDriver.start_link(hostname: "localhost", port: 9000)
+    {:ok, ddl_conn} = ChDriver.start_link(hostname: "localhost", port: Ports.clickhouse())
     {:ok, _} = ChDriver.query(ddl_conn, "DROP TABLE IF EXISTS #{@table}")
     {:ok, _} = ChDriver.query(ddl_conn, "DROP TABLE IF EXISTS schema_migrations")
 
     {:ok, _pid} =
       TestRepo.start_link(
         hostname: "localhost",
-        port: 9000,
+        port: Ports.clickhouse(),
         database: "default",
         username: "default",
         password: "",

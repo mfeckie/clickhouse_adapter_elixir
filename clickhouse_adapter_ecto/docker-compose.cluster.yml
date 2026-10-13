@@ -1,5 +1,6 @@
 # Two ClickHouse replicas and a Keeper, for the `:cluster`-tagged tests
-# (`mix test --only cluster`). Uses ports 19000/19001 so it can run alongside
+# (`mix test --only cluster`). Replicas publish on 29001/29002 (override with
+# CH_CLUSTER_PORT_1/CH_CLUSTER_PORT_2) so it can run alongside
 # docker-compose.yml.
 x-clickhouse: &clickhouse
   image: clickhouse/clickhouse-server:26.7
@@ -38,7 +39,7 @@ services:
     <<: *clickhouse
     hostname: clickhouse1
     ports:
-      - "19000:9000"
+      - "${CH_CLUSTER_PORT_1:-29001}:9000"
     environment:
       <<: *clickhouse-env
       REPLICA: clickhouse1
@@ -47,7 +48,7 @@ services:
     <<: *clickhouse
     hostname: clickhouse2
     ports:
-      - "19001:9000"
+      - "${CH_CLUSTER_PORT_2:-29002}:9000"
     environment:
       <<: *clickhouse-env
       REPLICA: clickhouse2

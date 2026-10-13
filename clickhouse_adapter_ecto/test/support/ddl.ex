@@ -1,15 +1,16 @@
 defmodule Ecto.Adapters.ClickHouse.TestSupport.Ddl do
   @moduledoc false
 
-  @default_connect_opts [hostname: "localhost", port: 9000, username: "default", password: ""]
+  alias Ecto.Adapters.ClickHouse.TestSupport.Ports
 
   @doc false
-  def default_connect_opts, do: @default_connect_opts
+  def default_connect_opts,
+    do: [hostname: "localhost", port: Ports.clickhouse(), username: "default", password: ""]
 
   @doc false
   def with_ddl_conn(connect_opts, fun) do
     opts =
-      @default_connect_opts
+      default_connect_opts()
       |> Keyword.put(:database, "default")
       |> Keyword.merge(connect_opts)
       |> Keyword.take([:hostname, :port, :database, :username, :password])

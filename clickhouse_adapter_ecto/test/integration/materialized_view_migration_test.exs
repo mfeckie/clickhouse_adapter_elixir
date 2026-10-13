@@ -28,6 +28,8 @@ defmodule Ecto.Adapters.ClickHouse.MaterializedViewMigrationTest do
 
   use ExUnit.Case, async: false
 
+  alias Ecto.Adapters.ClickHouse.TestSupport.Ports
+
   @moduletag :integration
   @moduletag timeout: 60_000
 
@@ -39,9 +41,14 @@ defmodule Ecto.Adapters.ClickHouse.MaterializedViewMigrationTest do
 
   setup do
     kafka_container =
-      case System.cmd("docker", ["ps", "-q", "--filter", "publish=9092"], stderr_to_stdout: true) do
-        {output, 0} -> output |> String.split("\n", trim: true) |> List.first("")
-        {output, status} -> flunk("docker ps --filter publish=9092 failed (#{status}): #{output}")
+      case System.cmd("docker", ["ps", "-q", "--filter", "publish=#{Ports.kafka()}"],
+             stderr_to_stdout: true
+           ) do
+        {output, 0} ->
+          output |> String.split("\n", trim: true) |> List.first("")
+
+        {output, status} ->
+          flunk("docker ps --filter publish=#{Ports.kafka()} failed (#{status}): #{output}")
       end
 
     if kafka_container == "" do
@@ -50,7 +57,7 @@ defmodule Ecto.Adapters.ClickHouse.MaterializedViewMigrationTest do
       )
     end
 
-    {:ok, ddl_conn} = ChDriver.start_link(hostname: "localhost", port: 9000)
+    {:ok, ddl_conn} = ChDriver.start_link(hostname: "localhost", port: Ports.clickhouse())
 
     tables = ~w(
       assignments_by_teacher_mv assignments_by_teacher assignments
@@ -65,14 +72,14 @@ defmodule Ecto.Adapters.ClickHouse.MaterializedViewMigrationTest do
     drop_all.(ddl_conn)
 
     on_exit(fn ->
-      {:ok, conn} = ChDriver.start_link(hostname: "localhost", port: 9000)
+      {:ok, conn} = ChDriver.start_link(hostname: "localhost", port: Ports.clickhouse())
       drop_all.(conn)
     end)
 
     {:ok, _pid} =
       TestRepo.start_link(
         hostname: "localhost",
-        port: 9000,
+        port: Ports.clickhouse(),
         database: "default",
         username: "default",
         password: "",
@@ -93,7 +100,7 @@ defmodule Ecto.Adapters.ClickHouse.MaterializedViewMigrationTest do
           kafka_container,
           "/opt/kafka/bin/kafka-console-producer.sh",
           "--bootstrap-server",
-          "localhost:9092",
+          "localhost:#{Ports.kafka()}",
           "--topic",
           topic
         ]
@@ -110,7 +117,7 @@ defmodule Ecto.Adapters.ClickHouse.MaterializedViewMigrationTest do
       kafka_container,
       "/opt/kafka/bin/kafka-topics.sh",
       "--bootstrap-server",
-      "localhost:9092",
+      "localhost:#{Ports.kafka()}",
       "--create",
       "--if-not-exists",
       "--topic",
@@ -128,7 +135,7 @@ defmodule Ecto.Adapters.ClickHouse.MaterializedViewMigrationTest do
       kafka_container,
       "/opt/kafka/bin/kafka-topics.sh",
       "--bootstrap-server",
-      "localhost:9092",
+      "localhost:#{Ports.kafka()}",
       "--delete",
       "--topic",
       topic

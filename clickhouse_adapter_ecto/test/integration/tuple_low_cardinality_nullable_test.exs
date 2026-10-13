@@ -19,6 +19,8 @@ defmodule Ecto.Adapters.ClickHouse.TupleLowCardinalityNullableTest do
 
   use ExUnit.Case, async: false
 
+  alias Ecto.Adapters.ClickHouse.TestSupport.Ports
+
   @moduletag :integration
 
   @table "adapter_tuple_lcn"
@@ -41,7 +43,7 @@ defmodule Ecto.Adapters.ClickHouse.TupleLowCardinalityNullableTest do
     {:ok, _pid} =
       TestRepo.start_link(
         hostname: "localhost",
-        port: 9000,
+        port: Ports.clickhouse(),
         database: "default",
         username: "default",
         password: "",
@@ -66,7 +68,7 @@ defmodule Ecto.Adapters.ClickHouse.TupleLowCardinalityNullableTest do
     # callback can outlive the repo's supervised pool, and checking a
     # connection out of a shutting-down pool exits.
     on_exit(fn ->
-      {:ok, conn} = ChDriver.start_link(hostname: "localhost", port: 9000)
+      {:ok, conn} = ChDriver.start_link(hostname: "localhost", port: Ports.clickhouse())
       ChDriver.query(conn, "DROP TABLE IF EXISTS #{@table}")
     end)
 

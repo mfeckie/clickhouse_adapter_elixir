@@ -47,7 +47,7 @@ defmodule ChDriver.DBConnectionTest do
 
   describe "a prepared query's placeholder lexing runs once, against a live ClickHouse server" do
     setup do
-      {:ok, pool} = ChDriver.start_link(pool_size: 1)
+      {:ok, pool} = ChDriver.start_link(ChDriver.TestCase.connect_opts(pool_size: 1))
       %{pool: pool}
     end
 
@@ -95,7 +95,7 @@ defmodule ChDriver.DBConnectionTest do
 
   describe "a real DBConnection pool against a live ClickHouse server" do
     setup do
-      {:ok, pool} = ChDriver.start_link(pool_size: 2)
+      {:ok, pool} = ChDriver.start_link(ChDriver.TestCase.connect_opts(pool_size: 2))
       %{pool: pool}
     end
 
@@ -141,7 +141,7 @@ defmodule ChDriver.DBConnectionTest do
     end
 
     test "ping/1 succeeds against a checked-out connection state" do
-      {:ok, conn} = ChDriver.Connection.connect()
+      {:ok, conn} = ChDriver.Connection.connect(ChDriver.TestCase.connect_opts())
       on_exit(fn -> ChDriver.Connection.close(conn.socket) end)
 
       assert :ok = ChDriver.Connection.ping(conn)
@@ -150,7 +150,7 @@ defmodule ChDriver.DBConnectionTest do
 
   describe "query!/2,3,4 against a live ClickHouse server" do
     setup do
-      {:ok, pool} = ChDriver.start_link(pool_size: 2)
+      {:ok, pool} = ChDriver.start_link(ChDriver.TestCase.connect_opts(pool_size: 2))
       %{pool: pool}
     end
 
@@ -172,7 +172,7 @@ defmodule ChDriver.DBConnectionTest do
 
   describe "heavier concurrent load across a bigger pool" do
     test "many more concurrent queries than connections still pair each caller with its own result" do
-      {:ok, pool} = ChDriver.start_link(pool_size: 10)
+      {:ok, pool} = ChDriver.start_link(ChDriver.TestCase.connect_opts(pool_size: 10))
 
       # 200 concurrent callers against 10 connections -- well beyond the
       # earlier 8-tasks/2-connections test -- each asking for a distinct,
@@ -204,10 +204,12 @@ defmodule ChDriver.DBConnectionTest do
 
       {:ok, pool} =
         ChDriver.start_link(
-          pool_size: 1,
-          backoff_min: 0,
-          backoff_max: 100,
-          test_marker: marker
+          ChDriver.TestCase.connect_opts(
+            pool_size: 1,
+            backoff_min: 0,
+            backoff_max: 100,
+            test_marker: marker
+          )
         )
 
       assert {:ok, %Result{rows: [[1]]}} = ChDriver.query(pool, "SELECT 1")
@@ -254,10 +256,12 @@ defmodule ChDriver.DBConnectionTest do
 
       {:ok, pool} =
         ChDriver.start_link(
-          pool_size: 1,
-          backoff_min: 0,
-          backoff_max: 100,
-          test_marker: marker
+          ChDriver.TestCase.connect_opts(
+            pool_size: 1,
+            backoff_min: 0,
+            backoff_max: 100,
+            test_marker: marker
+          )
         )
 
       assert {:ok, %Result{rows: [[0]]}} = ChDriver.query(pool, "SELECT 0")

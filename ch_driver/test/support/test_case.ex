@@ -17,7 +17,26 @@ defmodule ChDriver.TestCase do
   through, so `on_exit` has to open its own connection to issue it.
   """
 
-  @default_connect_opts [hostname: "localhost", port: 9000]
+  @doc """
+  Connection options for the test ClickHouse server, with `extra` merged on
+  top. The port comes from `CH_NATIVE_PORT`, defaulting to `29000` -- the
+  host port `clickhouse_adapter_ecto/docker-compose.yml` publishes, kept off
+  ClickHouse's standard `9000` so the test server can run alongside other
+  local containers. Read at runtime so changing the env var needs no
+  recompile.
+  """
+  @spec connect_opts(keyword) :: keyword
+  def connect_opts(extra \\ []) do
+    Keyword.merge([hostname: "localhost", port: clickhouse_port()], extra)
+  end
+
+  defp clickhouse_port do
+    case System.get_env("CH_NATIVE_PORT") do
+      nil -> 29000
+      "" -> 29000
+      value -> String.to_integer(value)
+    end
+  end
 
   @doc """
   Starts a `ChDriver` connection for the test, generates a unique table name
@@ -30,12 +49,11 @@ defmodule ChDriver.TestCase do
         setup_table("array")
       end
 
-  `connect_opts` overrides/extends the default `hostname: "localhost", port:
-  9000`.
+  `connect_opts` overrides/extends `connect_opts/1`'s defaults.
   """
   @spec setup_table(String.t(), keyword) :: %{conn: DBConnection.conn(), table: String.t()}
   def setup_table(name, connect_opts \\ []) do
-    opts = Keyword.merge(@default_connect_opts, connect_opts)
+    opts = connect_opts(connect_opts)
 
     {:ok, conn} = ChDriver.start_link(opts)
     table = "ch_driver_#{name}_test_#{System.unique_integer([:positive])}"
@@ -70,7 +88,7 @@ defmodule ChDriver.TestCase do
   """
   @spec setup_connection() :: %{conn: map}
   def setup_connection do
-    {:ok, conn} = ChDriver.Connection.connect()
+    {:ok, conn} = ChDriver.Connection.connect(connect_opts())
     ExUnit.Callbacks.on_exit(fn -> ChDriver.Connection.close(conn.socket) end)
     %{conn: conn}
   end
