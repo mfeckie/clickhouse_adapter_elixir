@@ -41,6 +41,8 @@ defmodule Ecto.Adapters.ClickHouse.ExtendedTypesIntegrationTest do
 
   use ExUnit.Case, async: false
 
+  alias Ecto.Adapters.ClickHouse.TestSupport.Ports
+
   @moduletag :integration
 
   defmodule TestRepo do
@@ -87,14 +89,14 @@ defmodule Ecto.Adapters.ClickHouse.ExtendedTypesIntegrationTest do
     {:ok, _pid} =
       TestRepo.start_link(
         hostname: "localhost",
-        port: 9000,
+        port: Ports.clickhouse(),
         database: "default",
         username: "default",
         password: "",
         pool_size: 5
       )
 
-    {:ok, ddl_conn} = ChDriver.start_link(hostname: "localhost", port: 9000)
+    {:ok, ddl_conn} = ChDriver.start_link(hostname: "localhost", port: Ports.clickhouse())
     {:ok, _} = ChDriver.query(ddl_conn, "DROP TABLE IF EXISTS extended_type_widgets")
     {:ok, _} = ChDriver.query(ddl_conn, "DROP TABLE IF EXISTS schema_migrations")
 
@@ -108,7 +110,7 @@ defmodule Ecto.Adapters.ClickHouse.ExtendedTypesIntegrationTest do
       )
 
     on_exit(fn ->
-      {:ok, conn} = ChDriver.start_link(hostname: "localhost", port: 9000)
+      {:ok, conn} = ChDriver.start_link(hostname: "localhost", port: Ports.clickhouse())
       ChDriver.query(conn, "DROP TABLE IF EXISTS extended_type_widgets")
       ChDriver.query(conn, "DROP TABLE IF EXISTS schema_migrations")
     end)

@@ -25,7 +25,7 @@ defmodule Mix.Tasks.Stress.Soak do
 
       mix stress.soak
       mix stress.soak --concurrency 10 --duration-minutes 2 --sample-interval-seconds 20
-      mix stress.soak --host localhost --port 9000
+      mix stress.soak --host localhost --port 29000
 
   ## Options
 
@@ -38,7 +38,7 @@ defmodule Mix.Tasks.Stress.Soak do
     * `--sample-interval-seconds` - how often to print a window sample
       (default `60`).
     * `--host` / `--port` - ClickHouse native TCP host/port, defaulting
-      to `localhost`/`9000` (the docker-compose defaults), matching
+      to `localhost`/`29000` (the docker-compose defaults), matching
       `mix stress.load`/`mix stress.seed`.
 
   ## Pool sizing (read this before changing `--concurrency`)
@@ -147,7 +147,7 @@ defmodule Mix.Tasks.Stress.Soak do
       Keyword.get(opts, :sample_interval_seconds, @default_sample_interval_seconds)
 
     host = Keyword.get(opts, :host, "localhost")
-    port = Keyword.get(opts, :port, 9000)
+    port = Keyword.get(opts, :port, 29000)
 
     # See the moduledoc's "Pool sizing" section on why this must match
     # `concurrency`, not be smaller.

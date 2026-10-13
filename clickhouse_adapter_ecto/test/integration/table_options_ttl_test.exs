@@ -13,6 +13,7 @@ defmodule Ecto.Adapters.ClickHouse.TableOptionsTtlTest do
   use ExUnit.Case, async: false
 
   alias Ecto.Adapters.ClickHouse.Migration
+  alias Ecto.Adapters.ClickHouse.TestSupport.Ports
 
   @moduletag :integration
 
@@ -40,14 +41,14 @@ defmodule Ecto.Adapters.ClickHouse.TableOptionsTtlTest do
   end
 
   test "a table created with a :ttl clause actually stores TTL in its DDL on the live server" do
-    {:ok, ddl_conn} = ChDriver.start_link(hostname: "localhost", port: 9000)
+    {:ok, ddl_conn} = ChDriver.start_link(hostname: "localhost", port: Ports.clickhouse())
     {:ok, _} = ChDriver.query(ddl_conn, "DROP TABLE IF EXISTS events_with_ttl")
     {:ok, _} = ChDriver.query(ddl_conn, "DROP TABLE IF EXISTS schema_migrations")
 
     {:ok, _pid} =
       TestRepo.start_link(
         hostname: "localhost",
-        port: 9000,
+        port: Ports.clickhouse(),
         database: "default",
         username: "default",
         password: "",

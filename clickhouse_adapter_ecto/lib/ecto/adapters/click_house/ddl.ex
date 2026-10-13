@@ -146,7 +146,15 @@ defmodule Ecto.Adapters.ClickHouse.DDL do
   Every table needs an `ENGINE`. Pass one explicitly via `options:` on
   `table/2` (e.g. `options: "ENGINE = MergeTree ORDER BY id"`); without
   it, this defaults to `ENGINE = MergeTree ORDER BY (<primary key
-  columns>)` (or `ORDER BY tuple()` with none). That default is fine for
+  columns>)` (or `ORDER BY tuple()` with none). The engine in that default
+  comes from `table/2`'s `:engine` option, else the repo's
+  `:default_table_engine` config (e.g. `"ReplicatedMergeTree"` in a
+  `Replicated` database), else `MergeTree`. `:engine` also combines with
+  `options:` that leave the engine out: `engine: "ReplicatedMergeTree",
+  options: "ORDER BY id"` renders `ENGINE = ReplicatedMergeTree ORDER BY
+  id`, and so does a repo default with those options. Setting `:engine`
+  alongside `options:` that already start with `ENGINE` raises, since one
+  of them would be ignored. That default is fine for
   `schema_migrations` and quick dev tables, but MergeTree's sort key is a
   real modeling decision for anything performance-sensitive -- pick it
   explicitly once that matters.
@@ -252,9 +260,25 @@ defmodule Ecto.Adapters.ClickHouse.DDL do
             "for anything else (ALTER TABLE, indexes, constraints, ...)."
   end
 
-  defp engine_clause(%Table{options: options}, _commands) when is_binary(options), do: options
+  @doc false
+  def options_set_engine?(options) when is_binary(options), do: options =~ ~r/\A\s*ENGINE\b/i
+  def options_set_engine?(_options), do: false
 
-  defp engine_clause(%Table{options: nil}, commands) do
+  defp engine_clause(%Table{options: options, engine: nil}, _commands) when is_binary(options),
+    do: options
+
+  defp engine_clause(%Table{options: options, engine: engine, name: name}, _commands)
+       when is_binary(options) do
+    if options_set_engine?(options) do
+      raise ArgumentError,
+            "table #{inspect(name)} has both :engine and an ENGINE in :options " <>
+              "(#{inspect(options)}); set the engine in one place"
+    end
+
+    ["ENGINE = ", to_string(engine), " ", options]
+  end
+
+  defp engine_clause(%Table{options: nil, engine: engine}, commands) do
     primary_key_columns =
       for {:add, name, _type, opts} <- commands, Keyword.get(opts, :primary_key, false) do
         quote_name(name)
@@ -265,7 +289,7 @@ defmodule Ecto.Adapters.ClickHouse.DDL do
         do: "tuple()",
         else: [?(, Enum.intersperse(primary_key_columns, ?,), ?)]
 
-    ["ENGINE = MergeTree ORDER BY " | order_by]
+    ["ENGINE = ", to_string(engine || "MergeTree"), " ORDER BY " | order_by]
   end
 
   defp column_definition!({:add, name, %Reference{}, _opts}) do

@@ -43,7 +43,7 @@ defmodule ChDriver.StreamTest do
 
   describe "genuinely incremental: the first block arrives without waiting for the full result" do
     setup do
-      {:ok, pool} = ChDriver.start_link(pool_size: 1)
+      {:ok, pool} = ChDriver.start_link(ChDriver.TestCase.connect_opts(pool_size: 1))
       %{pool: pool}
     end
 
@@ -123,7 +123,7 @@ defmodule ChDriver.StreamTest do
 
   describe "halting partway through a stream" do
     setup do
-      {:ok, pool} = ChDriver.start_link(pool_size: 1)
+      {:ok, pool} = ChDriver.start_link(ChDriver.TestCase.connect_opts(pool_size: 1))
       %{pool: pool}
     end
 
@@ -196,7 +196,7 @@ defmodule ChDriver.StreamTest do
 
   describe "stream contents/decoding" do
     setup do
-      {:ok, pool} = ChDriver.start_link(pool_size: 1)
+      {:ok, pool} = ChDriver.start_link(ChDriver.TestCase.connect_opts(pool_size: 1))
       %{pool: pool}
     end
 

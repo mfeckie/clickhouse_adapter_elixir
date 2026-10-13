@@ -46,8 +46,9 @@ guessed at.
 
 ### Prerequisites: getting ClickHouse running
 
-This notebook needs a real ClickHouse server on `localhost:9000` (the
-native protocol port). Any recent ClickHouse server will do; a minimal
+This notebook needs a real ClickHouse server reachable on `localhost:29000`
+(published from the container's native protocol port, 9000, to a
+non-standard host port so it won't clash with other local containers). Any recent ClickHouse server will do; a minimal
 Docker Compose setup looks like:
 
 ```yaml
@@ -55,8 +56,8 @@ services:
   clickhouse:
     image: clickhouse/clickhouse-server:26.7
     ports:
-      - "9000:9000" # native TCP protocol
-      - "8123:8123" # HTTP, handy for cross-checking with curl/ch
+      - "29000:9000" # native TCP protocol
+      - "28123:8123" # HTTP, handy for cross-checking with curl/ch
     environment:
       CLICKHOUSE_DB: default
       CLICKHOUSE_USER: default
@@ -108,7 +109,7 @@ end
 {:ok, _} =
   MyApp.Repo.start_link(
     hostname: "localhost",
-    port: 9000,
+    port: 29000,
     database: "default",
     username: "default",
     password: ""
@@ -116,7 +117,7 @@ end
 
 # A second, raw ChDriver connection for running DDL (CREATE/DROP TABLE)
 # outside of Ecto.Migrator -- same pattern getting_started.livemd uses.
-{:ok, ddl_conn} = ChDriver.start_link(hostname: "localhost", port: 9000)
+{:ok, ddl_conn} = ChDriver.start_link(hostname: "localhost", port: 29000)
 
 ChDriver.query(ddl_conn, "DROP TABLE IF EXISTS livemd_nf_page_views")
 

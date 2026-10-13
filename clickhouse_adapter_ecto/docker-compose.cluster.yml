@@ -1,0 +1,57 @@
+# Two ClickHouse replicas and a Keeper, for the `:cluster`-tagged tests
+# (`mix test --only cluster`). Replicas publish on 29001/29002 (override with
+# CH_CLUSTER_PORT_1/CH_CLUSTER_PORT_2) so it can run alongside
+# docker-compose.yml. Its own project name keeps `down` on one file from
+# touching the other's containers and network.
+name: clickhouse_adapter_ecto_cluster
+
+x-clickhouse: &clickhouse
+  image: clickhouse/clickhouse-server:26.7
+  depends_on:
+    keeper:
+      condition: service_healthy
+  volumes:
+    - ./docker/cluster/cluster.xml:/etc/clickhouse-server/config.d/cluster.xml:ro
+  ulimits:
+    nofile:
+      soft: 262144
+      hard: 262144
+  healthcheck:
+    test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8123/ping"]
+    interval: 2s
+    timeout: 2s
+    retries: 30
+
+x-clickhouse-env: &clickhouse-env
+  CLICKHOUSE_USER: default
+  CLICKHOUSE_PASSWORD: ""
+  CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: 1
+
+services:
+  keeper:
+    image: clickhouse/clickhouse-keeper:26.7
+    volumes:
+      - ./docker/cluster/keeper.xml:/etc/clickhouse-keeper/keeper_config.xml:ro
+    healthcheck:
+      test: ["CMD", "clickhouse-keeper-client", "-h", "localhost", "-p", "9181", "-q", "ls /"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+
+  clickhouse1:
+    <<: *clickhouse
+    hostname: clickhouse1
+    ports:
+      - "${CH_CLUSTER_PORT_1:-29001}:9000"
+    environment:
+      <<: *clickhouse-env
+      REPLICA: clickhouse1
+
+  clickhouse2:
+    <<: *clickhouse
+    hostname: clickhouse2
+    ports:
+      - "${CH_CLUSTER_PORT_2:-29002}:9000"
+    environment:
+      <<: *clickhouse-env
+      REPLICA: clickhouse2

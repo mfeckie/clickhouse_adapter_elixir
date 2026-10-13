@@ -42,6 +42,8 @@ defmodule Ecto.Adapters.ClickHouse.DateTime64VariantIntegrationTest do
 
   use ExUnit.Case, async: false
 
+  alias Ecto.Adapters.ClickHouse.TestSupport.Ports
+
   import Ecto.Query
 
   @moduletag :integration
@@ -86,7 +88,7 @@ defmodule Ecto.Adapters.ClickHouse.DateTime64VariantIntegrationTest do
     {:ok, _pid} =
       TestRepo.start_link(
         hostname: "localhost",
-        port: 9000,
+        port: Ports.clickhouse(),
         database: "default",
         username: "default",
         password: "",
@@ -97,7 +99,7 @@ defmodule Ecto.Adapters.ClickHouse.DateTime64VariantIntegrationTest do
     {:ok, ddl_conn} =
       ChDriver.start_link(
         hostname: "localhost",
-        port: 9000,
+        port: Ports.clickhouse(),
         settings: [{"enable_variant_type", "1"}]
       )
 
@@ -114,7 +116,7 @@ defmodule Ecto.Adapters.ClickHouse.DateTime64VariantIntegrationTest do
       )
 
     on_exit(fn ->
-      {:ok, conn} = ChDriver.start_link(hostname: "localhost", port: 9000)
+      {:ok, conn} = ChDriver.start_link(hostname: "localhost", port: Ports.clickhouse())
       ChDriver.query(conn, "DROP TABLE IF EXISTS dt64_variant_events")
       ChDriver.query(conn, "DROP TABLE IF EXISTS schema_migrations")
     end)

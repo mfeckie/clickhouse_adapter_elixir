@@ -12,7 +12,7 @@ defmodule ChDriver.CompressionTest do
 
   describe "compression: :lz4 against a live ClickHouse server" do
     setup do
-      {:ok, conn} = Connection.connect(compression: :lz4)
+      {:ok, conn} = Connection.connect(ChDriver.TestCase.connect_opts(compression: :lz4))
       on_exit(fn -> Connection.close(conn.socket) end)
       %{conn: conn}
     end
@@ -67,7 +67,7 @@ defmodule ChDriver.CompressionTest do
                )
 
       on_exit(fn ->
-        {:ok, conn} = Connection.connect()
+        {:ok, conn} = Connection.connect(ChDriver.TestCase.connect_opts())
         Connection.query(conn, "DROP TABLE IF EXISTS #{table}")
         Connection.close(conn.socket)
       end)
@@ -86,7 +86,7 @@ defmodule ChDriver.CompressionTest do
     end
 
     test "per-query :compression opt can override the connection's own default" do
-      {:ok, conn} = Connection.connect(compression: :none)
+      {:ok, conn} = Connection.connect(ChDriver.TestCase.connect_opts(compression: :none))
       on_exit(fn -> Connection.close(conn.socket) end)
 
       assert {:ok, %{rows: rows}} =
@@ -111,7 +111,7 @@ defmodule ChDriver.CompressionTest do
       # header rather than trusting the higher-level decode path. This does
       # NOT depend on the codec's CityHash checksum bug above -- it only inspects
       # raw bytes, it never calls `ChDriver.Protocol.Block.Compressed.decode/1`.
-      assert {:ok, conn} = Connection.connect(compression: :lz4)
+      assert {:ok, conn} = Connection.connect(ChDriver.TestCase.connect_opts(compression: :lz4))
       on_exit(fn -> Connection.close(conn.socket) end)
 
       packet = [
@@ -141,7 +141,7 @@ defmodule ChDriver.CompressionTest do
       # native/ch_driver_native/src/lib.rs's cityhash128/1 binding).
       # Regression test: both the checksum must verify AND LZ4 must
       # decompress correctly.
-      assert {:ok, conn} = Connection.connect(compression: :lz4)
+      assert {:ok, conn} = Connection.connect(ChDriver.TestCase.connect_opts(compression: :lz4))
       on_exit(fn -> Connection.close(conn.socket) end)
 
       packet = [

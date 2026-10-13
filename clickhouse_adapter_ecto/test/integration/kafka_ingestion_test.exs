@@ -14,6 +14,8 @@ defmodule Ecto.Adapters.ClickHouse.KafkaIngestionTest do
 
   use ExUnit.Case, async: false
 
+  alias Ecto.Adapters.ClickHouse.TestSupport.Ports
+
   @moduletag :integration
   @moduletag timeout: 60_000
 
@@ -29,9 +31,14 @@ defmodule Ecto.Adapters.ClickHouse.KafkaIngestionTest do
     # so it isn't part of any compose project -- found by published port
     # instead of by name/project.
     kafka_container =
-      case System.cmd("docker", ["ps", "-q", "--filter", "publish=9092"], stderr_to_stdout: true) do
-        {output, 0} -> output |> String.split("\n", trim: true) |> List.first("")
-        {output, status} -> flunk("docker ps --filter publish=9092 failed (#{status}): #{output}")
+      case System.cmd("docker", ["ps", "-q", "--filter", "publish=#{Ports.kafka()}"],
+             stderr_to_stdout: true
+           ) do
+        {output, 0} ->
+          output |> String.split("\n", trim: true) |> List.first("")
+
+        {output, status} ->
+          flunk("docker ps --filter publish=#{Ports.kafka()} failed (#{status}): #{output}")
       end
 
     if kafka_container == "" do
@@ -40,10 +47,10 @@ defmodule Ecto.Adapters.ClickHouse.KafkaIngestionTest do
       )
     end
 
-    {:ok, ddl_conn} = ChDriver.start_link(hostname: "localhost", port: 9000)
+    {:ok, ddl_conn} = ChDriver.start_link(hostname: "localhost", port: Ports.clickhouse())
 
     on_exit(fn ->
-      {:ok, conn} = ChDriver.start_link(hostname: "localhost", port: 9000)
+      {:ok, conn} = ChDriver.start_link(hostname: "localhost", port: Ports.clickhouse())
       ChDriver.query(conn, "DROP TABLE IF EXISTS order_events_mv")
       ChDriver.query(conn, "DROP TABLE IF EXISTS order_events_queue")
       ChDriver.query(conn, "DROP TABLE IF EXISTS order_events")
@@ -64,7 +71,7 @@ defmodule Ecto.Adapters.ClickHouse.KafkaIngestionTest do
           kafka_container,
           "/opt/kafka/bin/kafka-console-producer.sh",
           "--bootstrap-server",
-          "localhost:9092",
+          "localhost:#{Ports.kafka()}",
           "--topic",
           topic
         ]
@@ -81,7 +88,7 @@ defmodule Ecto.Adapters.ClickHouse.KafkaIngestionTest do
       kafka_container,
       "/opt/kafka/bin/kafka-topics.sh",
       "--bootstrap-server",
-      "localhost:9092",
+      "localhost:#{Ports.kafka()}",
       "--create",
       "--if-not-exists",
       "--topic",
@@ -99,7 +106,7 @@ defmodule Ecto.Adapters.ClickHouse.KafkaIngestionTest do
       kafka_container,
       "/opt/kafka/bin/kafka-topics.sh",
       "--bootstrap-server",
-      "localhost:9092",
+      "localhost:#{Ports.kafka()}",
       "--delete",
       "--topic",
       topic
@@ -131,7 +138,7 @@ defmodule Ecto.Adapters.ClickHouse.KafkaIngestionTest do
     {:ok, _pid} =
       TestRepo.start_link(
         hostname: "localhost",
-        port: 9000,
+        port: Ports.clickhouse(),
         database: "default",
         username: "default",
         password: "",

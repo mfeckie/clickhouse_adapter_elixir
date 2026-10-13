@@ -23,6 +23,7 @@ defmodule Ecto.Adapters.ClickHouse.ParameterizedTypesTest do
   @moduletag :integration
 
   alias Ecto.Adapters.ClickHouse.Migration, as: ChMigration
+  alias Ecto.Adapters.ClickHouse.TestSupport.Ports
   alias Ecto.Adapters.ClickHouse.Types.FixedString
 
   defmodule TestRepo do
@@ -59,14 +60,14 @@ defmodule Ecto.Adapters.ClickHouse.ParameterizedTypesTest do
     {:ok, _pid} =
       TestRepo.start_link(
         hostname: "localhost",
-        port: 9000,
+        port: Ports.clickhouse(),
         database: "default",
         username: "default",
         password: "",
         pool_size: 5
       )
 
-    {:ok, ddl_conn} = ChDriver.start_link(hostname: "localhost", port: 9000)
+    {:ok, ddl_conn} = ChDriver.start_link(hostname: "localhost", port: Ports.clickhouse())
     {:ok, _} = ChDriver.query(ddl_conn, "DROP TABLE IF EXISTS parameterized_type_widgets")
     {:ok, _} = ChDriver.query(ddl_conn, "DROP TABLE IF EXISTS schema_migrations")
 
@@ -80,7 +81,7 @@ defmodule Ecto.Adapters.ClickHouse.ParameterizedTypesTest do
       )
 
     on_exit(fn ->
-      {:ok, conn} = ChDriver.start_link(hostname: "localhost", port: 9000)
+      {:ok, conn} = ChDriver.start_link(hostname: "localhost", port: Ports.clickhouse())
       ChDriver.query(conn, "DROP TABLE IF EXISTS parameterized_type_widgets")
       ChDriver.query(conn, "DROP TABLE IF EXISTS schema_migrations")
     end)

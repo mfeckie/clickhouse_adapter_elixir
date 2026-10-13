@@ -1,9 +1,13 @@
+# Host ports default to non-standard values so this stack can run alongside
+# other local ClickHouse/Kafka containers. Override with CH_NATIVE_PORT,
+# CH_HTTP_PORT and KAFKA_HOST_PORT; the tests read the same variables (see
+# test/support/ports.ex).
 services:
   clickhouse:
     image: clickhouse/clickhouse-server:26.7
     ports:
-      - "9000:9000" # native TCP protocol
-      - "8123:8123" # HTTP, handy for cross-checking against ch
+      - "${CH_NATIVE_PORT:-29000}:9000" # native TCP protocol
+      - "${CH_HTTP_PORT:-28123}:8123" # HTTP, handy for cross-checking against ch
     environment:
       CLICKHOUSE_DB: default
       CLICKHOUSE_USER: default
@@ -23,16 +27,19 @@ services:
   # engine has something to poll for integration tests. Reachable from the
   # `clickhouse` container as `kafka:29092` (the ClickHouse server runs
   # inside the compose network, not on the host) and from the host as
-  # `localhost:9092` for producing test messages directly.
+  # `localhost:${KAFKA_HOST_PORT}` for producing test messages directly. The
+  # PLAINTEXT listener binds the same port inside the container as on the
+  # host, because clients bootstrapping from either side are redirected to
+  # the advertised `localhost:<port>`.
   kafka:
     image: apache/kafka:3.7.1
     ports:
-      - "9092:9092" # host-reachable listener, for a test producer
+      - "${KAFKA_HOST_PORT:-39092}:${KAFKA_HOST_PORT:-39092}" # host-reachable listener, for a test producer
     environment:
       KAFKA_NODE_ID: 1
       KAFKA_PROCESS_ROLES: broker,controller
-      KAFKA_LISTENERS: PLAINTEXT://:9092,INTERNAL://:29092,CONTROLLER://:9093
-      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:9092,INTERNAL://kafka:29092
+      KAFKA_LISTENERS: PLAINTEXT://:${KAFKA_HOST_PORT:-39092},INTERNAL://:29092,CONTROLLER://:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:${KAFKA_HOST_PORT:-39092},INTERNAL://kafka:29092
       KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,INTERNAL:PLAINTEXT
       KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
       KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
@@ -42,7 +49,7 @@ services:
       KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
       KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
     healthcheck:
-      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092"]
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:${KAFKA_HOST_PORT:-39092}"]
       interval: 3s
       timeout: 5s
       retries: 30

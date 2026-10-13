@@ -42,7 +42,7 @@ defmodule Mix.Tasks.Stress.Load do
 
       mix stress.load
       mix stress.load --concurrency-levels 5,20,100 --iterations-per-level 50
-      mix stress.load --host localhost --port 9000
+      mix stress.load --host localhost --port 29000
 
   ## Options
 
@@ -57,7 +57,7 @@ defmodule Mix.Tasks.Stress.Load do
       total) so every worker does the same amount of work regardless of
       `N`, making levels comparable to each other.
     * `--host` / `--port` - ClickHouse native TCP host/port, defaulting
-      to `localhost`/`9000` (the docker-compose defaults), matching
+      to `localhost`/`29000` (the docker-compose defaults), matching
       `mix stress.seed`.
     * `--report-path` - where to write the run's saved markdown summary
       (concurrency x shape table of counts/error-rate/latency and
@@ -141,7 +141,7 @@ defmodule Mix.Tasks.Stress.Load do
     concurrency_levels = parse_concurrency_levels(opts)
     iterations_per_level = Keyword.get(opts, :iterations_per_level, @default_iterations_per_level)
     host = Keyword.get(opts, :host, "localhost")
-    port = Keyword.get(opts, :port, 9000)
+    port = Keyword.get(opts, :port, 29000)
     generated_at = DateTime.utc_now()
     report_path = Keyword.get(opts, :report_path) || default_report_path(generated_at)
 

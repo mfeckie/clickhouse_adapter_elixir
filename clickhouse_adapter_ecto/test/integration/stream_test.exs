@@ -49,6 +49,7 @@ defmodule Ecto.Adapters.ClickHouse.StreamIntegrationTest do
   use ExUnit.Case, async: false
 
   alias ChDriver.Result
+  alias Ecto.Adapters.ClickHouse.TestSupport.Ports
 
   defmodule TestRepo do
     use Ecto.Repo, otp_app: :clickhouse_adapter_ecto, adapter: Ecto.Adapters.ClickHouse
@@ -68,14 +69,14 @@ defmodule Ecto.Adapters.ClickHouse.StreamIntegrationTest do
     {:ok, _pid} =
       TestRepo.start_link(
         hostname: "localhost",
-        port: 9000,
+        port: Ports.clickhouse(),
         database: "default",
         username: "default",
         password: "",
         pool_size: 2
       )
 
-    {:ok, ddl_conn} = ChDriver.start_link(hostname: "localhost", port: 9000)
+    {:ok, ddl_conn} = ChDriver.start_link(hostname: "localhost", port: Ports.clickhouse())
     {:ok, _} = ChDriver.query(ddl_conn, "DROP TABLE IF EXISTS stream_events")
 
     {:ok, _} =
@@ -85,7 +86,7 @@ defmodule Ecto.Adapters.ClickHouse.StreamIntegrationTest do
       )
 
     on_exit(fn ->
-      {:ok, conn} = ChDriver.start_link(hostname: "localhost", port: 9000)
+      {:ok, conn} = ChDriver.start_link(hostname: "localhost", port: Ports.clickhouse())
       ChDriver.query(conn, "DROP TABLE IF EXISTS stream_events")
     end)
 
@@ -93,7 +94,7 @@ defmodule Ecto.Adapters.ClickHouse.StreamIntegrationTest do
   end
 
   setup do
-    {:ok, conn} = ChDriver.start_link(hostname: "localhost", port: 9000)
+    {:ok, conn} = ChDriver.start_link(hostname: "localhost", port: Ports.clickhouse())
     {:ok, _} = ChDriver.query(conn, "TRUNCATE TABLE stream_events")
 
     for id <- 1..1000 do

@@ -45,6 +45,8 @@ defmodule Ecto.Adapters.ClickHouse.PrimaryKeySemanticsTest do
 
   use ExUnit.Case, async: false
 
+  alias Ecto.Adapters.ClickHouse.TestSupport.Ports
+
   @moduletag :integration
 
   defmodule TestRepo do
@@ -89,7 +91,7 @@ defmodule Ecto.Adapters.ClickHouse.PrimaryKeySemanticsTest do
   end
 
   defp start_ddl_conn! do
-    {:ok, ddl_conn} = ChDriver.start_link(hostname: "localhost", port: 9000)
+    {:ok, ddl_conn} = ChDriver.start_link(hostname: "localhost", port: Ports.clickhouse())
     ddl_conn
   end
 
@@ -97,7 +99,7 @@ defmodule Ecto.Adapters.ClickHouse.PrimaryKeySemanticsTest do
     {:ok, _pid} =
       TestRepo.start_link(
         hostname: "localhost",
-        port: 9000,
+        port: Ports.clickhouse(),
         database: "default",
         username: "default",
         password: "",

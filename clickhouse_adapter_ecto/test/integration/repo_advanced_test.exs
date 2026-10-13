@@ -28,6 +28,8 @@ defmodule Ecto.Adapters.ClickHouse.RepoAdvancedIntegrationTest do
 
   use ExUnit.Case, async: false
 
+  alias Ecto.Adapters.ClickHouse.TestSupport.Ports
+
   @moduletag :integration
 
   defmodule TestRepo do
@@ -89,14 +91,14 @@ defmodule Ecto.Adapters.ClickHouse.RepoAdvancedIntegrationTest do
     {:ok, _pid} =
       TestRepo.start_link(
         hostname: "localhost",
-        port: 9000,
+        port: Ports.clickhouse(),
         database: "default",
         username: "default",
         password: "",
         pool_size: 5
       )
 
-    {:ok, ddl_conn} = ChDriver.start_link(hostname: "localhost", port: 9000)
+    {:ok, ddl_conn} = ChDriver.start_link(hostname: "localhost", port: Ports.clickhouse())
     {:ok, _} = ChDriver.query(ddl_conn, "DROP TABLE IF EXISTS measurements")
 
     # No `ratio_of_defaults_for_sparse_serialization` override here: a
@@ -121,7 +123,7 @@ defmodule Ecto.Adapters.ClickHouse.RepoAdvancedIntegrationTest do
       )
 
     on_exit(fn ->
-      {:ok, conn} = ChDriver.start_link(hostname: "localhost", port: 9000)
+      {:ok, conn} = ChDriver.start_link(hostname: "localhost", port: Ports.clickhouse())
       ChDriver.query(conn, "DROP TABLE IF EXISTS measurements")
     end)
 
@@ -129,7 +131,7 @@ defmodule Ecto.Adapters.ClickHouse.RepoAdvancedIntegrationTest do
   end
 
   setup do
-    {:ok, conn} = ChDriver.start_link(hostname: "localhost", port: 9000)
+    {:ok, conn} = ChDriver.start_link(hostname: "localhost", port: Ports.clickhouse())
     {:ok, _} = ChDriver.query(conn, "TRUNCATE TABLE measurements")
     :ok
   end

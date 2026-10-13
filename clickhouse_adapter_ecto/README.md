@@ -13,7 +13,7 @@ Documentation: https://hexdocs.pm/clickhouse_adapter_ecto/
 ```elixir
 def deps do
   [
-    {:clickhouse_adapter_ecto, "~> 0.3"}
+    {:clickhouse_adapter_ecto, "~> 1.0"}
   ]
 end
 ```
@@ -131,6 +131,17 @@ table matters for performance. See the "`ORDER BY`/`PRIMARY KEY` is not a
 Postgres-style primary key" section of `Ecto.Adapters.ClickHouse.DDL`'s
 moduledoc for the full write-up.
 
+## Replicated clusters
+
+`mix ecto.create` creates an `Atomic` database on one server by default. Set
+`database_engine: "Replicated"` and `cluster: "{cluster}"` on the repo to
+create it with `ON CLUSTER ... ENGINE = Replicated` instead. Tables still need
+`Replicated*MergeTree` engines to replicate their data, so also set
+`default_table_engine: "ReplicatedMergeTree"` for `schema_migrations`.
+Migrations take no lock, so run them from one place, and need every
+replica up. See the "Replicated clusters" section of
+`Ecto.Adapters.ClickHouse`.
+
 ## Testing
 
 `Ecto.Adapters.SQL.Sandbox` doesn't work here -- this adapter has no
@@ -166,6 +177,26 @@ Tests sharing a table this way can't run `async: true` against each other.
 For that, see `Ecto.Adapters.ClickHouse.ConcurrentTestCase`
 (per-connection temp-table shadowing) or a per-test-module database via
 `storage_up/1`/`storage_down/1` -- both documented in their own moduledocs.
+
+### Running this repo's suite
+
+```
+docker compose up -d --wait   # ClickHouse + Kafka
+mix test
+docker compose -f docker-compose.cluster.yml up -d --wait
+mix test --only cluster
+```
+
+The compose files publish on non-standard host ports so they can run
+alongside other local ClickHouse or Kafka containers. Set the variable before
+both `docker compose up` and `mix test` to move a port:
+
+| Service             | Default host port | Override                 |
+| ------------------- | ----------------- | ------------------------ |
+| ClickHouse native   | 29000             | `CH_NATIVE_PORT`         |
+| ClickHouse HTTP     | 28123             | `CH_HTTP_PORT`           |
+| Kafka               | 39092             | `KAFKA_HOST_PORT`        |
+| Cluster replica 1/2 | 29001 / 29002     | `CH_CLUSTER_PORT_1`/`_2` |
 
 ## Repo layout
 
