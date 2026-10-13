@@ -87,4 +87,22 @@ defmodule Ecto.Adapters.ClickHouse.DDLTest do
       end
     end
   end
+
+  describe "default engine" do
+    @columns [{:add, :version, :bigint, [primary_key: true]}]
+
+    test "is MergeTree when the table sets no engine or options" do
+      table = %Table{name: :schema_migrations}
+
+      assert [sql] = DDL.execute_ddl({:create_if_not_exists, table, @columns})
+      assert sql =~ ~s[ENGINE = MergeTree ORDER BY ("version")]
+    end
+
+    test "uses the table's :engine" do
+      table = %Table{name: :schema_migrations, engine: "ReplicatedMergeTree"}
+
+      assert [sql] = DDL.execute_ddl({:create_if_not_exists, table, @columns})
+      assert sql =~ ~s[ENGINE = ReplicatedMergeTree ORDER BY ("version")]
+    end
+  end
 end

@@ -11,6 +11,9 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 - `:database_engine` and `:cluster` repo options for `storage_up/1` and
   `storage_down/1`, so `mix ecto.create` can create a `Replicated` database
   `ON CLUSTER`.
+- `:default_table_engine` repo option, and `table/2`'s `:engine` option,
+  for tables created without explicit `options:`. Set it to
+  `"ReplicatedMergeTree"` so `schema_migrations` replicates.
 - `:maintenance_database` repo option (default `"default"`) for the
   database the storage functions connect to.
 

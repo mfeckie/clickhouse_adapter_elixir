@@ -146,7 +146,10 @@ defmodule Ecto.Adapters.ClickHouse.DDL do
   Every table needs an `ENGINE`. Pass one explicitly via `options:` on
   `table/2` (e.g. `options: "ENGINE = MergeTree ORDER BY id"`); without
   it, this defaults to `ENGINE = MergeTree ORDER BY (<primary key
-  columns>)` (or `ORDER BY tuple()` with none). That default is fine for
+  columns>)` (or `ORDER BY tuple()` with none). The engine in that default
+  comes from `table/2`'s `:engine` option, else the repo's
+  `:default_table_engine` config (e.g. `"ReplicatedMergeTree"` in a
+  `Replicated` database), else `MergeTree`. That default is fine for
   `schema_migrations` and quick dev tables, but MergeTree's sort key is a
   real modeling decision for anything performance-sensitive -- pick it
   explicitly once that matters.
@@ -254,7 +257,7 @@ defmodule Ecto.Adapters.ClickHouse.DDL do
 
   defp engine_clause(%Table{options: options}, _commands) when is_binary(options), do: options
 
-  defp engine_clause(%Table{options: nil}, commands) do
+  defp engine_clause(%Table{options: nil, engine: engine}, commands) do
     primary_key_columns =
       for {:add, name, _type, opts} <- commands, Keyword.get(opts, :primary_key, false) do
         quote_name(name)
@@ -265,7 +268,7 @@ defmodule Ecto.Adapters.ClickHouse.DDL do
         do: "tuple()",
         else: [?(, Enum.intersperse(primary_key_columns, ?,), ?)]
 
-    ["ENGINE = MergeTree ORDER BY " | order_by]
+    ["ENGINE = ", to_string(engine || "MergeTree"), " ORDER BY " | order_by]
   end
 
   defp column_definition!({:add, name, %Reference{}, _opts}) do

@@ -108,3 +108,44 @@ jobs:
       - run: mix format --check-formatted
       - run: mix compile --warnings-as-errors
       - run: mix test
+
+  cluster:
+    runs-on: ubuntu-22.04
+    env:
+      FORCE_COMPILE: "1"
+    defaults:
+      run:
+        working-directory: clickhouse_adapter_ecto
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: erlef/setup-beam@v1
+        with:
+          otp-version: "28"
+          elixir-version: "1.19"
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache mix deps
+        uses: actions/cache@v4
+        with:
+          path: |
+            ch_driver/deps
+            ch_driver/_build
+            clickhouse_adapter_ecto/deps
+            clickhouse_adapter_ecto/_build
+          key: ${{ runner.os }}-mix-${{ hashFiles('ch_driver/mix.lock', 'clickhouse_adapter_ecto/mix.lock') }}
+
+      - name: Cache cargo registry & build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ch_driver/native/ch_driver_native/target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('ch_driver/Cargo.lock') }}
+
+      # Two replicas and a Keeper, for the :cluster tests.
+      - run: docker compose -f docker-compose.cluster.yml up -d --wait
+      - run: mix deps.get
+      - run: mix test --only cluster

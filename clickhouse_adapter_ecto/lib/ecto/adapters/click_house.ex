@@ -90,9 +90,14 @@ defmodule Ecto.Adapters.ClickHouse do
 
   renders `CREATE DATABASE "my_app" ON CLUSTER '{cluster}' ENGINE = Replicated`
   (and `mix ecto.drop` adds the same `ON CLUSTER`). Both options are
-  optional and independent. Tables created by migrations inside a
-  `Replicated` database become `Replicated*` automatically, including
-  `schema_migrations`.
+  optional and independent.
+
+  A `Replicated` database replicates DDL, but a plain `MergeTree` table in
+  it still keeps its data on one replica. Declare tables with
+  `Replicated*MergeTree` engines (no arguments needed inside a `Replicated`
+  database), and set `default_table_engine: "ReplicatedMergeTree"` on the
+  repo so `schema_migrations` and other tables without an explicit engine
+  replicate too.
 
   `storage_up/1`, `storage_down/1` and `storage_status/1` connect to the
   `:maintenance_database` (default `"default"`), since the target database
@@ -219,6 +224,23 @@ defmodule Ecto.Adapters.ClickHouse do
             "via the asynchronous `ALTER TABLE ... DELETE` statement, not a synchronous SQL " <>
             "DELETE -- issue an ALTER TABLE mutation directly via a raw query if you need this"
   end
+
+  # Ecto creates schema_migrations itself, so a repo-level default is the
+  # only way to give it a Replicated engine.
+  @impl Ecto.Adapter.Migration
+  def execute_ddl(
+        meta,
+        {command, %Ecto.Migration.Table{engine: nil, options: nil} = table, columns},
+        opts
+      )
+      when command in [:create, :create_if_not_exists] do
+    engine =
+      meta |> Map.fetch!(:repo) |> then(& &1.config()) |> Keyword.get(:default_table_engine)
+
+    super(meta, {command, %{table | engine: engine}, columns}, opts)
+  end
+
+  def execute_ddl(meta, definition, opts), do: super(meta, definition, opts)
 
   ## Storage -- see moduledoc. `opts` here is the repo's full config
   ## (`:hostname`, `:port`, `:database`, `:username`, `:password`, etc, as

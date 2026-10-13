@@ -135,9 +135,10 @@ moduledoc for the full write-up.
 
 `mix ecto.create` creates an `Atomic` database on one server by default. Set
 `database_engine: "Replicated"` and `cluster: "{cluster}"` on the repo to
-create it with `ON CLUSTER ... ENGINE = Replicated` instead, so tables and
-`schema_migrations` replicate. Migrations take no lock, so run them from one
-place. See the "Replicated clusters" section of `Ecto.Adapters.ClickHouse`.
+create it with `ON CLUSTER ... ENGINE = Replicated` instead. Tables still need
+`Replicated*MergeTree` engines to replicate their data, so also set
+`default_table_engine: "ReplicatedMergeTree"` for `schema_migrations`.
+Migrations take no lock, so run them from one place. See the "Replicated clusters" section of `Ecto.Adapters.ClickHouse`.
 
 ## Testing
 
